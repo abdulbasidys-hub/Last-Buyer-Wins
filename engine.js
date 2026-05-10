@@ -1,353 +1,298 @@
-/**
- * Last Buyer Wins — engine.js
- * ─────────────────────────────────────────────────────────────────────────────
- * Runs on Railway (Node 18+). Polls every 15 seconds:
- *   1. Fetch recent buys via SolanaTracker
- *   2. Write new buyers to Firestore `buyers/`
- *   3. If 60s pass with no new buy → send SOL to last buyer
- *   4. Record winner in `winners/` and update `stats/global`
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * COMMON RAILWAY CRASH CAUSES (all fixed here):
- *   ✅ bs58 v5 uses a default export — accessed as bs58.default.decode()
- *   ✅ node-fetch v2 loaded with require() — v3 is ESM-only, crashes CJS
- *   ✅ FIREBASE_SERVICE_ACCOUNT_JSON parsed safely with try/catch
- *   ✅ Missing env vars caught at startup, not mid-run
- *   ✅ Uncaught promise rejections handled — won't silently kill the process
- */
-
 'use strict';
 require('dotenv').config();
 
 // ─── VALIDATE ENV EARLY ───────────────────────────────────────────────────────
-const REQUIRED_VARS = [
-  'TOKEN_CA',
-  'CREATOR_PRIVATE_KEY',
-  'SOLANATRACKER_API_KEY',
-  'FIREBASE_SERVICE_ACCOUNT_JSON',
-];
-const missing = REQUIRED_VARS.filter(k => !process.env[k]);
+const REQUIRED = ['TOKEN_CA', 'CREATOR_PRIVATE_KEY', 'SOLANATRACKER_API_KEY', 'FIREBASE_SERVICE_ACCOUNT_JSON'];
+const missing  = REQUIRED.filter(k => !process.env[k]);
 if (missing.length) {
-  console.error('[LBW] ❌ Missing required env vars:', missing.join(', '));
+  console.error('[LBW] ❌ Missing env vars:', missing.join(', '));
   process.exit(1);
 }
 
-// ─── IMPORTS ─────────────────────────────────────────────────────────────────
 const cron  = require('node-cron');
-const fetch = require('node-fetch');   // package.json must pin "node-fetch": "^2.7.0"
+const fetch = require('node-fetch');   // must be "node-fetch": "^2.7.0" in package.json
 
 const {
-  Connection,
-  PublicKey,
-  Transaction,
-  SystemProgram,
-  Keypair,
-  sendAndConfirmTransaction,
-  LAMPORTS_PER_SOL,
+  Connection, PublicKey, Transaction,
+  SystemProgram, Keypair,
+  sendAndConfirmTransaction, LAMPORTS_PER_SOL,
 } = require('@solana/web3.js');
 
-// bs58 v5 ships as ESM with a CJS shim — the decode fn lives on .default
 const bs58Raw = require('bs58');
-const bs58    = bs58Raw.default ?? bs58Raw;   // works for both v4 and v5
+const bs58    = bs58Raw.default ?? bs58Raw;
 
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
+const { initializeApp, cert }                  = require('firebase-admin/app');
+const { getFirestore, FieldValue, Timestamp }  = require('firebase-admin/firestore');
 
-// ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TOKEN_CA       = process.env.TOKEN_CA;
-const ST_API_KEY     = process.env.SOLANATRACKER_API_KEY;
-const CREATOR_WALLET = process.env.CREATOR_WALLET;        // optional; falls back to key wallet
-const GAS_RESERVE    = parseFloat(process.env.GAS_RESERVE_SOL    || '0.005');
-const MIN_DISTRIBUTE = parseFloat(process.env.MIN_DISTRIBUTE_SOL || '0.01');
-const TIMER_SECONDS  = parseInt(process.env.TIMER_SECONDS        || '60', 10);
-const SOLANA_RPC     = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
-
-// ─── SOLANA + FIREBASE INIT ───────────────────────────────────────────────────
+// ─── SOLANA ───────────────────────────────────────────────────────────────────
+const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(SOLANA_RPC, 'confirmed');
 
 let wallet;
 try {
   wallet = Keypair.fromSecretKey(bs58.decode(process.env.CREATOR_PRIVATE_KEY));
 } catch (e) {
-  console.error('[LBW] ❌ Could not decode CREATOR_PRIVATE_KEY — make sure it is base58:', e.message);
+  console.error('[LBW] ❌ Bad CREATOR_PRIVATE_KEY:', e.message);
   process.exit(1);
 }
 
-let serviceAccount;
+// ─── FIREBASE ────────────────────────────────────────────────────────────────
+let svcAccount;
 try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  svcAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 } catch (e) {
-  console.error('[LBW] ❌ Could not parse FIREBASE_SERVICE_ACCOUNT_JSON — must be valid JSON on one line:', e.message);
+  console.error('[LBW] ❌ Bad FIREBASE_SERVICE_ACCOUNT_JSON — must be valid JSON on ONE line:', e.message);
   process.exit(1);
 }
-
 try {
-  initializeApp({ credential: cert(serviceAccount) });
+  initializeApp({ credential: cert(svcAccount) });
 } catch (e) {
   console.error('[LBW] ❌ Firebase init failed:', e.message);
   process.exit(1);
 }
-
 const db = getFirestore();
 
-const CREATOR_ADDR = CREATOR_WALLET || wallet.publicKey.toString();
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const TOKEN_CA       = process.env.TOKEN_CA.trim();
+const ST_API_KEY     = process.env.SOLANATRACKER_API_KEY.trim();
+const CREATOR_ADDR   = (process.env.CREATOR_WALLET || wallet.publicKey.toString()).trim();
+const GAS_RESERVE    = parseFloat(process.env.GAS_RESERVE_SOL    || '0.005');
+const MIN_DISTRIBUTE = parseFloat(process.env.MIN_DISTRIBUTE_SOL || '0.01');
+const TIMER_SECONDS  = parseInt(process.env.TIMER_SECONDS        || '60', 10);
 
 console.log('╔══════════════════════════════════════════╗');
 console.log('║     Last Buyer Wins — Engine Online      ║');
 console.log('╚══════════════════════════════════════════╝');
 console.log(`[LBW] Token CA      : ${TOKEN_CA}`);
-console.log(`[LBW] Paying wallet : ${wallet.publicKey.toString()}`);
+console.log(`[LBW] Payout wallet : ${wallet.publicKey.toString()}`);
 console.log(`[LBW] Timer         : ${TIMER_SECONDS}s`);
-console.log(`[LBW] Min distribute: ${MIN_DISTRIBUTE} SOL   Gas reserve: ${GAS_RESERVE} SOL`);
-console.log(`[LBW] RPC           : ${SOLANA_RPC}`);
+console.log(`[LBW] Min payout    : ${MIN_DISTRIBUTE} SOL  Gas reserve: ${GAS_RESERVE} SOL`);
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let lastSeenTxSig = null;
-let lastBuyTimeMs = null;  // ms — updated every time we see a new buy
+let lastBuyTimeMs = null;
 
-// ─── UTILS ───────────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// ─── SOLANA HELPERS ───────────────────────────────────────────────────────────
 async function getBalanceSol() {
-  const lamps = await connection.getBalance(wallet.publicKey);
-  return lamps / LAMPORTS_PER_SOL;
+  const lamports = await connection.getBalance(wallet.publicKey);
+  return lamports / LAMPORTS_PER_SOL;
 }
 
-async function sendSOL(toAddress, lamports) {
+async function sendSol(toAddress, lamports) {
   const tx = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: wallet.publicKey,
-      toPubkey:   new PublicKey(toAddress),
-      lamports,
-    })
+    SystemProgram.transfer({ fromPubkey: wallet.publicKey, toPubkey: new PublicKey(toAddress), lamports })
   );
   return sendAndConfirmTransaction(connection, tx, [wallet], { commitment: 'confirmed' });
 }
 
-// ─── SOL PRICE (Jupiter) ─────────────────────────────────────────────────────
+// ─── SOL/USD PRICE (Jupiter) ─────────────────────────────────────────────────
 async function fetchSolPriceUsd() {
   try {
     const res  = await fetch('https://price.jup.ag/v6/price?ids=So11111111111111111111111111111111111111112');
     const data = await res.json();
     return data?.data?.So11111111111111111111111111111111111111112?.price ?? null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// ─── RECENT BUYERS from SolanaTracker ────────────────────────────────────────
-async function fetchRecentBuyers() {
-  await sleep(1500); // soft rate-limit guard
+// ─── SOLANATRACKER TRADES ────────────────────────────────────────────────────
+// Correct endpoint:  GET https://data.solanatracker.io/trades/{tokenAddress}
+// Response shape:    { trades: [ { tx, wallet, type, time, amount, priceUsd, volume, volumeSol, program, pools } ], nextCursor, hasNextPage }
+// Key facts:
+//   tx        = transaction signature  (NOT "signature")
+//   type      = "buy" | "sell"         (NOT "side")
+//   time      = Unix ms                (NOT seconds — no *1000 needed)
+//   wallet    = buyer/seller wallet
+async function fetchRecentBuys() {
+  await sleep(1200);
   try {
-    const url = `https://data.solanatracker.io/tokens/${TOKEN_CA}/trades?limit=25`;
+    const url = `https://data.solanatracker.io/trades/${TOKEN_CA}?sortDirection=DESC&hideArb=true`;
     const res = await fetch(url, {
       headers: { 'x-api-key': ST_API_KEY },
-      timeout: 10000,
+      timeout: 12000,
     });
 
     if (!res.ok) {
-      console.warn(`[LBW] SolanaTracker HTTP ${res.status}`);
+      const body = await res.text().catch(() => '');
+      console.warn(`[LBW] SolanaTracker HTTP ${res.status}: ${body.slice(0, 120)}`);
       return [];
     }
 
-    const raw = await res.json();
+    const json   = await res.json();
 
-    // SolanaTracker response shape can vary — handle all known shapes
-    const trades = Array.isArray(raw)
-      ? raw
-      : raw.trades ?? raw.items ?? raw.data?.trades ?? raw.data ?? [];
+    // ── correct shape: { trades: [...] }
+    const trades = json.trades ?? json.items ?? (Array.isArray(json) ? json : []);
+
+    console.log(`[LBW] SolanaTracker returned ${trades.length} total trade(s)`);
+
+    if (trades.length > 0) {
+      // Log first trade so we can verify shape in Railway logs
+      console.log(`[LBW] Sample trade:`, JSON.stringify(trades[0]).slice(0, 200));
+    }
 
     return trades
-      .filter(t => {
-        const side = (t.type || t.side || '').toLowerCase();
-        return side === 'buy';
-      })
+      .filter(t => (t.type || '').toLowerCase() === 'buy')
       .map(t => ({
-        wallet:      t.wallet || t.buyer || t.maker || t.signer || null,
-        txSignature: t.signature || t.txSignature || t.tx || t.hash || null,
-        time:        t.timestamp
-          ? new Date(t.timestamp * 1000)
-          : t.blockTime
-          ? new Date(t.blockTime * 1000)
-          : new Date(),
+        wallet:      t.wallet,
+        txSignature: t.tx,              // ← correct field name
+        time:        new Date(t.time),  // ← already ms, just wrap in Date
       }))
       .filter(t => t.wallet && t.txSignature);
+
   } catch (e) {
-    console.error('[LBW] fetchRecentBuyers error:', e.message);
+    console.error('[LBW] fetchRecentBuys error:', e.message);
     return [];
   }
 }
 
 // ─── MAIN TICK ───────────────────────────────────────────────────────────────
 async function tick() {
-  const ts = new Date().toISOString();
-  console.log(`[LBW] ── ${ts} ──`);
+  console.log(`[LBW] ── tick ${new Date().toISOString()} ──`);
 
   try {
-    // 1. Pull recent buys
-    const recentBuys = await fetchRecentBuyers();
-    console.log(`[LBW] SolanaTracker returned ${recentBuys.length} buy(s)`);
+    // 1. Fetch buys
+    const buys = await fetchRecentBuys();
+    console.log(`[LBW] ${buys.length} buy(s) found after filter`);
 
-    if (recentBuys.length > 0) {
-      // Find trades we haven't recorded yet
-      const cutoffIdx = lastSeenTxSig
-        ? recentBuys.findIndex(b => b.txSignature === lastSeenTxSig)
-        : -1;
-
-      const newBuys = cutoffIdx === -1
-        ? recentBuys.slice(0, 5)   // first run — seed with up to 5 recent
-        : recentBuys.slice(0, cutoffIdx);
+    if (buys.length > 0) {
+      // Detect new ones (not yet written to Firestore)
+      const cutoff  = lastSeenTxSig ? buys.findIndex(b => b.txSignature === lastSeenTxSig) : -1;
+      const newBuys = cutoff === -1 ? buys.slice(0, 5) : buys.slice(0, cutoff);
 
       if (newBuys.length > 0) {
-        console.log(`[LBW] ${newBuys.length} new buy(s) — writing to Firestore`);
-
+        console.log(`[LBW] Writing ${newBuys.length} new buy(s) to Firestore`);
         const batch = db.batch();
-        for (const buy of newBuys) {
-          const ref = db.collection('buyers').doc(buy.txSignature);
-          batch.set(ref, {
-            wallet:      buy.wallet,
-            txSignature: buy.txSignature,
-            time:        Timestamp.fromDate(buy.time),
+        for (const b of newBuys) {
+          batch.set(db.collection('buyers').doc(b.txSignature), {
+            wallet:      b.wallet,
+            txSignature: b.txSignature,
+            time:        Timestamp.fromDate(b.time),
           }, { merge: true });
         }
         await batch.commit();
+      }
 
-        // Update in-memory state with newest buy
-        lastSeenTxSig = recentBuys[0].txSignature;
-        lastBuyTimeMs  = recentBuys[0].time.getTime();
+      // Update state with most recent buy
+      lastSeenTxSig = buys[0].txSignature;
+      lastBuyTimeMs  = buys[0].time.getTime();
 
+      await db.doc('stats/global').set({
+        lastBuyTime: Timestamp.fromDate(buys[0].time),
+        lastBuyer:   buys[0].wallet,
+      }, { merge: true });
+
+      console.log(`[LBW] Last buyer: ${buys[0].wallet} at ${buys[0].time.toISOString()}`);
+
+    } else {
+      // No buys returned — still need to write stats/global so the site timer works
+      if (!lastBuyTimeMs) {
+        // First run, no trades yet — write a placeholder so the frontend shows something
         await db.doc('stats/global').set({
-          lastBuyTime: Timestamp.fromDate(recentBuys[0].time),
-          lastBuyer:   recentBuys[0].wallet,
+          lastBuyTime:   Timestamp.now(),
+          currentPotSol: 0,
+          currentPotUsd: null,
         }, { merge: true });
-
-        console.log(`[LBW] Last buyer: ${recentBuys[0].wallet}`);
+        lastBuyTimeMs = Date.now();
+        console.log(`[LBW] No buys yet — seeded stats/global with current time`);
       } else {
-        console.log(`[LBW] No new buys since last tick`);
-
-        // Seed lastBuyTimeMs on first run if we saw existing trades
-        if (!lastBuyTimeMs) {
-          lastBuyTimeMs  = recentBuys[0].time.getTime();
-          lastSeenTxSig  = recentBuys[0].txSignature;
-        }
+        console.log(`[LBW] No new buys this tick`);
       }
     }
 
     // 2. Update pot display
-    const balSol   = await getBalanceSol();
-    const sendable = Math.max(0, balSol - GAS_RESERVE);
-    const solPrice = await fetchSolPriceUsd();
-    const potUsd   = solPrice ? sendable * solPrice : null;
+    const balSol    = await getBalanceSol();
+    const sendable  = Math.max(0, balSol - GAS_RESERVE);
+    const solPrice  = await fetchSolPriceUsd();
+    const potUsd    = solPrice ? parseFloat((sendable * solPrice).toFixed(2)) : null;
 
     await db.doc('stats/global').set({
       currentPotSol: sendable,
-      currentPotUsd: potUsd ?? null,
+      currentPotUsd: potUsd,
     }, { merge: true });
 
-    console.log(`[LBW] Wallet balance: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` (~$${potUsd.toFixed(2)})` : ''}`);
+    console.log(`[LBW] Balance: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` ≈ $${potUsd}` : ''}`);
 
     // 3. Check timer
-    if (!lastBuyTimeMs) {
-      console.log(`[LBW] No buy history yet — skipping distribution check`);
-      return;
-    }
+    if (!lastBuyTimeMs) return;
 
     const elapsed = (Date.now() - lastBuyTimeMs) / 1000;
-    console.log(`[LBW] Elapsed since last buy: ${elapsed.toFixed(1)}s / ${TIMER_SECONDS}s`);
+    console.log(`[LBW] Elapsed: ${elapsed.toFixed(1)}s / ${TIMER_SECONDS}s`);
 
     if (elapsed < TIMER_SECONDS) {
-      console.log(`[LBW] Timer running — ${(TIMER_SECONDS - elapsed).toFixed(0)}s remaining`);
+      console.log(`[LBW] Timer running — ${(TIMER_SECONDS - elapsed).toFixed(0)}s left`);
       return;
     }
 
-    // 4. Timer expired — distribute!
-    console.log(`[LBW] ⏰ Timer expired! Checking balance...`);
+    // 4. Timer expired — pay out
+    console.log(`[LBW] ⏰ Timer expired! Checking for payout...`);
 
     if (sendable < MIN_DISTRIBUTE) {
-      console.log(`[LBW] Balance too low (${sendable.toFixed(4)} SOL < ${MIN_DISTRIBUTE}) — skipping`);
+      console.log(`[LBW] Balance too low (${sendable.toFixed(4)} SOL) — skipping`);
       return;
     }
 
-    // Get last buyer
-    const snap = await db.collection('buyers')
-      .orderBy('time', 'desc')
-      .limit(1)
-      .get();
-
+    // Get last buyer from Firestore
+    const snap = await db.collection('buyers').orderBy('time', 'desc').limit(1).get();
     if (snap.empty) {
-      console.log(`[LBW] No buyers in Firestore — nothing to send`);
-      return;
-    }
-
-    const lastBuyer = snap.docs[0].data().wallet;
-
-    if (lastBuyer === CREATOR_ADDR || lastBuyer === wallet.publicKey.toString()) {
-      console.log(`[LBW] Last buyer is creator wallet — resetting timer`);
+      console.log(`[LBW] No buyers in Firestore — resetting timer`);
       lastBuyTimeMs = Date.now();
       await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
       return;
     }
 
-    // Send it
+    const lastBuyer = snap.docs[0].data().wallet;
+    if (lastBuyer === CREATOR_ADDR || lastBuyer === wallet.publicKey.toString()) {
+      console.log(`[LBW] Last buyer is creator — resetting timer`);
+      lastBuyTimeMs = Date.now();
+      await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
+      return;
+    }
+
+    // Send SOL
     const lamports = Math.floor(sendable * LAMPORTS_PER_SOL);
     console.log(`[LBW] 🏆 Sending ${sendable.toFixed(4)} SOL to ${lastBuyer}`);
 
     let txSig;
     try {
-      txSig = await sendSOL(lastBuyer, lamports);
+      txSig = await sendSol(lastBuyer, lamports);
       console.log(`[LBW] ✅ TX confirmed: ${txSig}`);
-    } catch (sendErr) {
-      console.error(`[LBW] ❌ Send failed:`, sendErr.message);
-      // Don't reset timer so we retry next tick if it was transient
+    } catch (e) {
+      console.error(`[LBW] ❌ Send failed:`, e.message);
       return;
     }
 
-    // 5. Record winner + update stats
-    const winSol = sendable;
-    const winUsd = solPrice ? winSol * solPrice : null;
-
+    // Record winner
+    const winUsd = solPrice ? parseFloat((sendable * solPrice).toFixed(2)) : null;
     const batch2 = db.batch();
     batch2.set(db.collection('winners').doc(), {
-      wallet:      lastBuyer,
-      amountSol:   winSol,
-      amountUsd:   winUsd ?? null,
-      txSignature: txSig,
-      timestamp:   Timestamp.now(),
+      wallet: lastBuyer, amountSol: sendable, amountUsd: winUsd,
+      txSignature: txSig, timestamp: Timestamp.now(),
     });
     batch2.set(db.doc('stats/global'), {
-      totalPaidSol:  FieldValue.increment(winSol),
+      totalPaidSol:  FieldValue.increment(sendable),
       totalPaidUsd:  FieldValue.increment(winUsd ?? 0),
       totalWinners:  FieldValue.increment(1),
       lastWinner:    lastBuyer,
       currentPotSol: 0,
       currentPotUsd: 0,
-      lastBuyTime:   Timestamp.now(),  // reset timer
+      lastBuyTime:   Timestamp.now(),
     }, { merge: true });
     await batch2.commit();
 
-    // Reset in-memory timer
     lastBuyTimeMs = Date.now();
-
-    console.log(`[LBW] 🎉 Winner recorded! ${lastBuyer} won ${winSol.toFixed(4)} SOL${winUsd ? ` ($${winUsd.toFixed(2)})` : ''}`);
+    console.log(`[LBW] 🎉 Winner: ${lastBuyer} won ${sendable.toFixed(4)} SOL${winUsd ? ` ($${winUsd})` : ''}`);
 
   } catch (err) {
-    console.error('[LBW] Unhandled tick error:', err);
-    // Never crash the process — cron will retry on next tick
+    console.error('[LBW] Tick error:', err.message ?? err);
   }
 }
 
-// ─── GLOBAL SAFETY NET ────────────────────────────────────────────────────────
-process.on('unhandledRejection', (reason) => {
-  console.error('[LBW] unhandledRejection:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('[LBW] uncaughtException:', err);
-  // Don't exit — keep the engine alive for Railway
-});
+// ─── SAFETY NETS ─────────────────────────────────────────────────────────────
+process.on('unhandledRejection', r => console.error('[LBW] unhandledRejection:', r));
+process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', e));
 
 // ─── START ────────────────────────────────────────────────────────────────────
-tick(); // immediate run on boot
-
-// Then every 15 seconds
+tick();
 cron.schedule('*/15 * * * * *', tick);
 console.log('[LBW] Scheduler started — ticking every 15 seconds');

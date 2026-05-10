@@ -17,8 +17,8 @@ const firebaseConfig = {
   measurementId: "G-XCZPQC1P5R"
 };
 
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
+const fbApp = initializeApp(firebaseConfig);
+const db    = getFirestore(fbApp);
 const TIMER_SECONDS = 60;
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -27,11 +27,10 @@ const fmtUSD = (n) => n != null
   ? `$${Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
   : '—';
 
-// Colour shifts with urgency — same palette used everywhere
 function timerColor(pct) {
-  if (pct > 0.5) return '#60a5fa';  // cool blue
-  if (pct > 0.2) return '#fb923c';  // amber
-  return '#f87171';                  // red
+  if (pct > 0.5) return '#60a5fa';
+  if (pct > 0.2) return '#fb923c';
+  return '#f87171';
 }
 
 // ─── FLOATING CORNER TIMER ────────────────────────────────────────────────────
@@ -60,7 +59,7 @@ function FloatingTimer({ secondsLeft }) {
   );
 }
 
-// ─── BIG COUNTDOWN RING ───────────────────────────────────────────────────────
+// ─── BIG RING ─────────────────────────────────────────────────────────────────
 function CountdownRing({ secondsLeft }) {
   const r = 54, circ = 2 * Math.PI * r;
   const pct   = Math.max(0, secondsLeft / TIMER_SECONDS);
@@ -86,9 +85,11 @@ function CountdownRing({ secondsLeft }) {
   );
 }
 
-// ─── TABLE ROWS ───────────────────────────────────────────────────────────────
+// ─── ROWS ─────────────────────────────────────────────────────────────────────
 function BuyerRow({ buyer, isFirst, index }) {
-  const ts = buyer.time?.toDate ? buyer.time.toDate() : buyer.time ? new Date(buyer.time) : null;
+  const ts = buyer.time?.toDate
+    ? buyer.time.toDate()
+    : buyer.time ? new Date(buyer.time) : null;
   return (
     <div className={`buyer-row${isFirst ? ' buyer-row--first' : ''}`} style={{ animationDelay:`${index*.04}s` }}>
       <div className="buyer-index">{isFirst ? '👑' : index + 1}</div>
@@ -104,7 +105,9 @@ function BuyerRow({ buyer, isFirst, index }) {
 }
 
 function WinnerRow({ winner, index }) {
-  const ts = winner.timestamp?.toDate ? new Date(winner.timestamp.toDate()).toLocaleDateString() : '—';
+  const date = winner.timestamp?.toDate
+    ? new Date(winner.timestamp.toDate()).toLocaleDateString()
+    : '—';
   return (
     <div className="winner-row" style={{ animationDelay:`${index*.06}s` }}>
       <div className="winner-pos">#{index + 1}</div>
@@ -114,15 +117,17 @@ function WinnerRow({ winner, index }) {
         </a>
       </div>
       <div className="winner-amount">{fmtUSD(winner.amountUsd)}</div>
-      <div className="winner-date">{ts}</div>
+      <div className="winner-date">{date}</div>
       {winner.txSignature && (
-        <a className="winner-tx" href={`https://solscan.io/tx/${winner.txSignature}`} target="_blank" rel="noreferrer">TX ↗</a>
+        <a className="winner-tx" href={`https://solscan.io/tx/${winner.txSignature}`} target="_blank" rel="noreferrer">
+          TX ↗
+        </a>
       )}
     </div>
   );
 }
 
-// ─── MAIN ─────────────────────────────────────────────────────────────────────
+// ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [buyers,    setBuyers]    = useState([]);
   const [winners,   setWinners]   = useState([]);
@@ -134,39 +139,53 @@ export default function App() {
   const [tab,       setTab]       = useState('live');
   const nextDistRef = useRef(null);
 
+  // ── Firestore: buyers ────────────────────────────────────────────────────
   useEffect(() => {
     const q = query(collection(db,'buyers'), orderBy('time','desc'), limit(50));
     return onSnapshot(q, snap => setBuyers(snap.docs.map(d => ({id:d.id,...d.data()}))));
   }, []);
 
+  // ── Firestore: winners ───────────────────────────────────────────────────
   useEffect(() => {
     const q = query(collection(db,'winners'), orderBy('timestamp','desc'), limit(30));
     return onSnapshot(q, snap => setWinners(snap.docs.map(d => ({id:d.id,...d.data()}))));
   }, []);
 
+  // ── Firestore: stats/global ──────────────────────────────────────────────
   useEffect(() => {
     return onSnapshot(doc(db,'stats','global'), snap => {
       if (!snap.exists()) return;
       const d = snap.data();
       setStats(d);
       if (d.currentPotUsd != null) setPotUsd(d.currentPotUsd);
-      if (d.lastBuyTime) nextDistRef.current = d.lastBuyTime.toMillis() + TIMER_SECONDS * 1000;
+      if (d.lastBuyTime) {
+        // lastBuyTime is a Firestore Timestamp
+        nextDistRef.current = d.lastBuyTime.toMillis() + TIMER_SECONDS * 1000;
+      }
     });
   }, []);
 
+  // ── Local countdown ticker ───────────────────────────────────────────────
+  // Runs every 500ms regardless of Firestore state.
+  // If nextDistRef is null (no data yet) it just shows TIMER_SECONDS.
   useEffect(() => {
     const iv = setInterval(() => {
-      if (nextDistRef.current)
-        setCountdown(Math.max(0, Math.ceil((nextDistRef.current - Date.now()) / 1000)));
+      if (nextDistRef.current) {
+        const secs = Math.max(0, Math.ceil((nextDistRef.current - Date.now()) / 1000));
+        setCountdown(Math.min(secs, TIMER_SECONDS));
+      }
     }, 500);
     return () => clearInterval(iv);
   }, []);
 
+  // ── SolanaTracker token price ────────────────────────────────────────────
   useEffect(() => {
     if (!TOKEN_CA || TOKEN_CA === 'PASTE_YOUR_CA_HERE' || !API_KEY) return;
     const go = async () => {
       try {
-        const res  = await fetch(`https://data.solanatracker.io/tokens/${TOKEN_CA}`, { headers:{'x-api-key':API_KEY} });
+        const res  = await fetch(`https://data.solanatracker.io/tokens/${TOKEN_CA}`, {
+          headers: { 'x-api-key': API_KEY }
+        });
         const data = await res.json();
         const p    = data?.price?.usd ?? data?.price ?? data?.pools?.[0]?.price?.usd ?? null;
         if (p != null && !isNaN(p)) setPrice(parseFloat(p));
@@ -178,7 +197,8 @@ export default function App() {
   }, []);
 
   const handleCopy = () =>
-    navigator.clipboard.writeText(TOKEN_CA).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    navigator.clipboard.writeText(TOKEN_CA)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
 
   const pct   = Math.max(0, countdown / TIMER_SECONDS);
   const color = timerColor(pct);
@@ -187,7 +207,7 @@ export default function App() {
     <div className="app">
       <FloatingTimer secondsLeft={countdown} />
 
-      {/* ── HEADER ── */}
+      {/* HEADER */}
       <header className="header">
         <div className="header-inner">
           <div className="logo-wrap">
@@ -208,7 +228,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── HERO ── */}
+      {/* HERO */}
       <section className="hero">
         <div className="hero-tag">💰 DEV FEES GO TO THE LAST BUYER</div>
         <h1 className="hero-title">
@@ -221,13 +241,15 @@ export default function App() {
         </p>
         <div className="ca-box">
           <span className="ca-label">CA</span>
-          <span className="ca-addr">{TOKEN_CA === 'PASTE_YOUR_CA_HERE' ? 'Coming soon…' : TOKEN_CA}</span>
+          <span className="ca-addr">
+            {TOKEN_CA === 'PASTE_YOUR_CA_HERE' ? 'Coming soon…' : TOKEN_CA}
+          </span>
           {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' &&
             <button className="ca-copy" onClick={handleCopy}>{copied ? '✓ Copied' : 'Copy'}</button>}
         </div>
       </section>
 
-      {/* ── HOW IT WORKS ── */}
+      {/* HOW IT WORKS */}
       <section className="how-it-works">
         <h2 className="section-title">How It Works</h2>
         <div className="steps">
@@ -245,7 +267,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* ── LIVE PANEL ── */}
+      {/* LIVE PANEL */}
       <section className="live-section">
         <div className="live-grid">
 
@@ -309,7 +331,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* ── FOOTER ── */}
+      {/* FOOTER */}
       <footer className="footer">
         <div className="footer-links">
           <a href={X_LINK} target="_blank" rel="noreferrer">𝕏 Twitter</a>
@@ -318,7 +340,6 @@ export default function App() {
             <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
           </>}
         </div>
-        <p className="footer-disc">$LBW is a memecoin. Not financial advice. Trade responsibly.</p>
       </footer>
     </div>
   );
