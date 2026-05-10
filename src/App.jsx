@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, doc } from 'firebase/firestore';
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TOKEN_CA = 'PASTE_YOUR_CA_HERE';
+const TOKEN_CA = 'G2hAvfD2WLx4sNgMypSTiZGtuLLdsCapLFizQmqLGzgp';
 const X_LINK   = 'https://x.com/PASTE_YOUR_X_HERE';
 const API_KEY  = import.meta.env.VITE_TRACKER_CODE;
 
