@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Public read, no client writes
+    match /buyers/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /winners/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /stats/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Block everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
