@@ -295,4 +295,4 @@ process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
 cron.schedule('*/3 * * * * *', tick);
-console.log('[LBW] Scheduler started — ticking every 15 seconds');
+console.log('[LBW] Scheduler started — ticking every 3 seconds');
