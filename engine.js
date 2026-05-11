@@ -59,6 +59,7 @@ const CREATOR_ADDR   = (process.env.CREATOR_WALLET || wallet.publicKey.toString(
 const GAS_RESERVE    = parseFloat(process.env.GAS_RESERVE_SOL    || '0.005');
 const MIN_DISTRIBUTE = parseFloat(process.env.MIN_DISTRIBUTE_SOL || '0.01');
 const TIMER_SECONDS  = parseInt(process.env.TIMER_SECONDS        || '60', 10);
+const MIN_BUY_USD    = parseFloat(process.env.MIN_BUY_USD        || '10');   // $10 minimum to qualify
 
 console.log('╔══════════════════════════════════════════╗');
 console.log('║     Last Buyer Wins — Engine Online      ║');
@@ -66,6 +67,7 @@ console.log('╚═════════════════════�
 console.log(`[LBW] Token CA      : ${TOKEN_CA}`);
 console.log(`[LBW] Payout wallet : ${wallet.publicKey.toString()}`);
 console.log(`[LBW] Timer         : ${TIMER_SECONDS}s`);
+console.log(`[LBW] Min buy       : $${MIN_BUY_USD} USD`);
 console.log(`[LBW] Min payout    : ${MIN_DISTRIBUTE} SOL  Gas reserve: ${GAS_RESERVE} SOL`);
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -133,10 +135,21 @@ async function fetchRecentBuys() {
 
     return trades
       .filter(t => (t.type || '').toLowerCase() === 'buy')
+      .filter(t => {
+        // Enforce minimum buy — SolanaTracker provides `volume` in USD
+        const usdValue = t.volume ?? t.priceUsd * t.amount ?? 0;
+        if (usdValue < MIN_BUY_USD) {
+          // Log rejections so we can verify in Railway logs
+          console.log(`[LBW] Skipping buy < $${MIN_BUY_USD} (got $${usdValue?.toFixed(2)}) from ${t.wallet?.slice(0,8)}`);
+          return false;
+        }
+        return true;
+      })
       .map(t => ({
         wallet:      t.wallet,
         txSignature: t.tx,              // ← correct field name
         time:        new Date(t.time),  // ← already ms, just wrap in Date
+        volumeUsd:   t.volume ?? null,
       }))
       .filter(t => t.wallet && t.txSignature);
 
@@ -168,6 +181,7 @@ async function tick() {
             wallet:      b.wallet,
             txSignature: b.txSignature,
             time:        Timestamp.fromDate(b.time),
+            volumeUsd:   b.volumeUsd ?? null,
           }, { merge: true });
         }
         await batch.commit();
@@ -294,5 +308,5 @@ process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', 
 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
-cron.schedule('*/3 * * * * *', tick);
-console.log('[LBW] Scheduler started — ticking every 3 seconds');
+cron.schedule('*/15 * * * * *', tick);
+console.log('[LBW] Scheduler started — ticking every 15 seconds');
