@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { motion, AnimatePresence, useAnimationFrame } from 'framer-motion';
+import { useEffect, useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, doc } from 'firebase/firestore';
 
@@ -17,6 +17,7 @@ const firebaseConfig = {
   storageBucket:     "last-buyer-wins.firebasestorage.app",
   messagingSenderId: "344177187543",
   appId:             "1:344177187543:web:99797ade8c5ac700016e92",
+  measurementId:     "G-XCZPQC1P5R",
 };
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
@@ -602,6 +603,7 @@ export default function App() {
               <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
             </>}
           </div>
+          <span className="footer-legal">Not financial advice. Min buy $10 USD. Trade responsibly.</span>
         </div>
       </footer>
     </div>

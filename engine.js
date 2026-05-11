@@ -201,7 +201,6 @@ async function tick() {
     } else {
       // No buys returned — still need to write stats/global so the site timer works
       if (!lastBuyTimeMs) {
-        // First run, no trades yet — write a placeholder so the frontend shows something
         await db.doc('stats/global').set({
           lastBuyTime:   Timestamp.now(),
           currentPotSol: 0,
@@ -214,12 +213,13 @@ async function tick() {
       }
     }
 
-    // 2. Update pot display
+    // 2. Update pot display — merge into same doc in one call
     const balSol    = await getBalanceSol();
     const sendable  = Math.max(0, balSol - GAS_RESERVE);
     const solPrice  = await fetchSolPriceUsd();
     const potUsd    = solPrice ? parseFloat((sendable * solPrice).toFixed(2)) : null;
 
+    // Single merged write — frontend snapshot always sees consistent state
     await db.doc('stats/global').set({
       currentPotSol: sendable,
       currentPotUsd: potUsd,
@@ -308,5 +308,5 @@ process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', 
 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
-cron.schedule('*/15 * * * * *', tick);
-console.log('[LBW] Scheduler started — ticking every 15 seconds');
+cron.schedule('*/3 * * * * *', tick);
+console.log('[LBW] Scheduler started — ticking every 3 seconds');
