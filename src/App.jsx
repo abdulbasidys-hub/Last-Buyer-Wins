@@ -324,7 +324,6 @@ export default function App() {
             <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
           </>}
         </div>
-        <p className="footer-legal">$LBW is a memecoin. Not financial advice. Minimum qualifying buy: $10 USD. Trade responsibly.</p>
       </footer>
     </div>
   );
