@@ -1,5 +1,6 @@
 'use strict';
 require('dotenv').config();
+const { startAutoClaimFees } = require("./claimFees");
 
 // ─── VALIDATE ENV EARLY ───────────────────────────────────────────────────────
 const REQUIRED = ['TOKEN_CA', 'CREATOR_PRIVATE_KEY', 'SOLANATRACKER_API_KEY', 'FIREBASE_SERVICE_ACCOUNT_JSON'];
@@ -306,6 +307,8 @@ async function tick() {
 // ─── SAFETY NETS ─────────────────────────────────────────────────────────────
 process.on('unhandledRejection', r => console.error('[LBW] unhandledRejection:', r));
 process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', e));
+
+startAutoClaimFees(connection, creatorKP, log);
 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
