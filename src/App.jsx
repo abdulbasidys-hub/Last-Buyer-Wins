@@ -238,27 +238,20 @@ function PotDisplay({ value }) {
 }
 
 /* ─── BUYER CARD ─────────────────────────────────────────────────────────── */
-function BuyerCard({ buyer, rank, isLeader }) {
+function BuyerCard({ buyer, isFirst }) {
   const ts = buyer.time?.toDate ? buyer.time.toDate() : buyer.time ? new Date(buyer.time) : null;
   const timeAgo = ts ? `${pad2(ts.getHours())}:${pad2(ts.getMinutes())}:${pad2(ts.getSeconds())}` : '--:--:--';
-  const colors = ['#fbbf24','#9ca3af','#cd7f32'];
-  const rankColor = rank <= 3 ? colors[rank-1] : 'rgba(255,255,255,0.3)';
 
   return (
     <motion.div
-      className={`buyer-card${isLeader ? ' buyer-card--leader' : ''}`}
+      className={`buyer-card${isFirst ? ' buyer-card--leader' : ''}`}
       initial={{ opacity: 0, x: -20, scale: 0.96 }}
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 20 }}
       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
       layout
     >
-      {isLeader && (
-        <div className="leader-bar" />
-      )}
-      <div className="buyer-rank" style={{ color: rankColor }}>
-        {rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : `#${rank}`}
-      </div>
+      {isFirst && <div className="leader-bar" />}
       <div className="buyer-avatar">
         {buyer.wallet?.slice(0,2).toUpperCase() || '??'}
       </div>
@@ -268,13 +261,13 @@ function BuyerCard({ buyer, rank, isLeader }) {
         </a>
         <div className="buyer-time">{timeAgo}</div>
       </div>
-      {isLeader && (
+      {isFirst && (
         <motion.div
           className="leader-badge"
           animate={{ opacity: [1, 0.6, 1] }}
           transition={{ repeat: Infinity, duration: 1.2 }}
         >
-          LEADER
+          LAST BUYER
         </motion.div>
       )}
     </motion.div>
@@ -322,6 +315,7 @@ export default function App() {
   const [stats,     setStats]     = useState({});
   const [price,     setPrice]     = useState(null);
   const [potUsd,    setPotUsd]    = useState(null);
+  const [potSol,    setPotSol]    = useState(null);
   const [countdown, setCountdown] = useState(TIMER_TOTAL);
   const [copied,    setCopied]    = useState(false);
   const [tab,       setTab]       = useState('buyers');
@@ -347,6 +341,7 @@ export default function App() {
       const d = snap.data();
       setStats(d);
       if (d.currentPotUsd != null) setPotUsd(d.currentPotUsd);
+      if (d.currentPotSol != null) setPotSol(d.currentPotSol);
       if (d.lastBuyTime) nextRef.current = d.lastBuyTime.toMillis() + TIMER_TOTAL * 1000;
     });
   }, []);
@@ -487,9 +482,12 @@ export default function App() {
 
             {/* Pot */}
             <div className="pot-card">
-              <div className="pot-label">CURRENT POT</div>
+              <div className="pot-label">CREATOR WALLET BALANCE</div>
               <PotDisplay value={potUsd} />
-              <div className="pot-sub">up for grabs right now</div>
+              <div className="pot-sol">
+                {potSol != null ? `${potSol.toFixed(4)} SOL` : '— SOL'}
+              </div>
+              <div className="pot-sub">current pot — up for grabs</div>
             </div>
 
             {/* Stats */}
@@ -529,7 +527,7 @@ export default function App() {
                     ) : (
                       <AnimatePresence>
                         {buyers.map((b,i) => (
-                          <BuyerCard key={b.id} buyer={b} rank={i+1} isLeader={i===0} />
+                          <BuyerCard key={b.id} buyer={b} isFirst={i===0} />
                         ))}
                       </AnimatePresence>
                     )}
@@ -603,7 +601,6 @@ export default function App() {
               <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
             </>}
           </div>
-          <span className="footer-legal">Not financial advice. Min buy $10 USD. Trade responsibly.</span>
         </div>
       </footer>
     </div>

@@ -305,6 +305,10 @@ a { color: inherit; text-decoration: none; }
   color: var(--gold); letter-spacing: .02em;
   filter: drop-shadow(0 0 20px rgba(251,191,36,.35));
 }
+.pot-sol {
+  font-family: var(--mono); font-size: .82rem; font-weight: 500;
+  color: rgba(251,191,36,0.6); margin-top: 4px; letter-spacing: .04em;
+}
 .pot-sub { font-size: .72rem; color: var(--dim); margin-top: 6px; }
 
 /* Mini stats */
@@ -370,17 +374,17 @@ a { color: inherit; text-decoration: none; }
 }
 .buyer-card:last-child { border: none; }
 .buyer-card:hover { background: rgba(255,255,255,0.03); }
+
+/* Last buyer — full rectangle highlight */
 .buyer-card--leader {
-  background: rgba(167,139,250,0.07);
-  padding-left: 21px;
+  background: rgba(167,139,250,0.08);
+  border: 1px solid rgba(167,139,250,0.35);
+  border-radius: 10px;
+  margin: 8px 10px;
+  padding: 12px 14px;
 }
-.buyer-card--leader:hover { background: rgba(167,139,250,0.1); }
-.leader-bar {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-  background: linear-gradient(to bottom, var(--purple), var(--blue));
-  border-radius: 0 2px 2px 0;
-}
-.buyer-rank { font-family: var(--mono); font-size: .8rem; min-width: 28px; }
+.buyer-card--leader:hover { background: rgba(167,139,250,0.12); }
+.leader-bar { display: none; }
 .buyer-avatar {
   width: 36px; height: 36px; border-radius: 50%;
   background: linear-gradient(135deg, rgba(167,139,250,.25), rgba(96,165,250,.2));

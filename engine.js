@@ -217,15 +217,16 @@ async function tick() {
     const balSol    = await getBalanceSol();
     const sendable  = Math.max(0, balSol - GAS_RESERVE);
     const solPrice  = await fetchSolPriceUsd();
-    const potUsd    = solPrice ? parseFloat((sendable * solPrice).toFixed(2)) : null;
+    // Use full wallet balance for pot display — picks up manually claimed PumpFun rewards automatically
+    const potUsd    = solPrice ? parseFloat((balSol * solPrice).toFixed(2)) : null;
 
     // Single merged write — frontend snapshot always sees consistent state
     await db.doc('stats/global').set({
-      currentPotSol: sendable,
+      currentPotSol: parseFloat(balSol.toFixed(4)),
       currentPotUsd: potUsd,
     }, { merge: true });
 
-    console.log(`[LBW] Balance: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` ≈ $${potUsd}` : ''}`);
+    console.log(`[LBW] Wallet: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` | Pot ≈ $${potUsd}` : ''}`);
 
     // 3. Check timer
     if (!lastBuyTimeMs) return;
