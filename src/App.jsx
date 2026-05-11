@@ -1,129 +1,342 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { motion, AnimatePresence, useAnimationFrame } from 'framer-motion';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, doc } from 'firebase/firestore';
 
-// ─── CONFIG ───────────────────────────────────────────────────────────────────
-const TOKEN_CA = 'PASTE_YOUR_CA_HERE';
-const X_LINK   = 'https://x.com/PASTE_YOUR_X_HERE';
-const API_KEY  = import.meta.env.VITE_TRACKER_CODE;
+/* ─── CONFIG ──────────────────────────────────────────────────────────────── */
+const TOKEN_CA    = 'PASTE_YOUR_CA_HERE';
+const X_LINK      = 'https://x.com/PASTE_YOUR_X_HERE';
+const API_KEY     = import.meta.env.VITE_TRACKER_CODE;
 const MIN_BUY_USD = 10;
+const TIMER_TOTAL = 60;
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD6zrFitiXimD3CIz67_cPN1C1TQ_2upxo",
-  authDomain: "last-buyer-wins.firebaseapp.com",
-  projectId: "last-buyer-wins",
-  storageBucket: "last-buyer-wins.firebasestorage.app",
+  apiKey:            "AIzaSyD6zrFitiXimD3CIz67_cPN1C1TQ_2upxo",
+  authDomain:        "last-buyer-wins.firebaseapp.com",
+  projectId:         "last-buyer-wins",
+  storageBucket:     "last-buyer-wins.firebasestorage.app",
   messagingSenderId: "344177187543",
-  appId: "1:344177187543:web:99797ade8c5ac700016e92",
-  measurementId: "G-XCZPQC1P5R"
+  appId:             "1:344177187543:web:99797ade8c5ac700016e92",
 };
-
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
-const TIMER_SECONDS = 60;
 
-const short  = (a) => a ? `${a.slice(0,4)}…${a.slice(-4)}` : '—';
-const fmtUSD = (n) => n != null
-  ? `$${Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
-  : '—';
+/* ─── HELPERS ─────────────────────────────────────────────────────────────── */
+const short  = a => a ? `${a.slice(0,4)}…${a.slice(-4)}` : '—';
+const fmtUSD = n => n != null ? `$${Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
+const pad2   = n => String(Math.floor(n)).padStart(2,'0');
 
-function timerColor(pct) {
-  if (pct > 0.5) return '#a78bfa';
-  if (pct > 0.2) return '#fb923c';
-  return '#f87171';
+/* ─── ANIMATED BACKGROUND ────────────────────────────────────────────────── */
+function Background({ intensity }) {
+  const canvasRef = useRef(null);
+  const particlesRef = useRef([]);
+  const frameRef = useRef(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Init particles
+    const N = 60;
+    particlesRef.current = Array.from({length: N}, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: Math.random() * 1.8 + 0.3,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3,
+      alpha: Math.random() * 0.5 + 0.1,
+      color: Math.random() > 0.5 ? '180,120,255' : Math.random() > 0.5 ? '80,140,255' : '255,200,80',
+    }));
+
+    let raf;
+    const draw = () => {
+      frameRef.current++;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Animated gradient mesh
+      const t = frameRef.current * 0.004;
+      const gx1 = canvas.width  * (0.5 + Math.sin(t * 0.7) * 0.35);
+      const gy1 = canvas.height * (0.3 + Math.cos(t * 0.5) * 0.25);
+      const gx2 = canvas.width  * (0.3 + Math.cos(t * 0.6) * 0.3);
+      const gy2 = canvas.height * (0.7 + Math.sin(t * 0.8) * 0.2);
+
+      const g1 = ctx.createRadialGradient(gx1, gy1, 0, gx1, gy1, canvas.width * 0.55);
+      g1.addColorStop(0, `rgba(120,60,220,${0.13 + intensity * 0.07})`);
+      g1.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g1; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      const g2 = ctx.createRadialGradient(gx2, gy2, 0, gx2, gy2, canvas.width * 0.5);
+      g2.addColorStop(0, `rgba(30,80,220,${0.10 + intensity * 0.05})`);
+      g2.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g2; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // Light streak
+      const sx = canvas.width * (0.5 + Math.sin(t * 0.3) * 0.4);
+      const sg = ctx.createLinearGradient(sx - 200, 0, sx + 200, canvas.height * 0.6);
+      sg.addColorStop(0, 'rgba(0,0,0,0)');
+      sg.addColorStop(0.5, `rgba(200,160,255,${0.03 + intensity * 0.03})`);
+      sg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = sg; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // Particles
+      particlesRef.current.forEach(p => {
+        p.x += p.vx * (1 + intensity * 0.8);
+        p.y += p.vy * (1 + intensity * 0.8);
+        if (p.x < 0) p.x = canvas.width;
+        if (p.x > canvas.width) p.x = 0;
+        if (p.y < 0) p.y = canvas.height;
+        if (p.y > canvas.height) p.y = 0;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * (1 + intensity * 0.5), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${p.color},${p.alpha * (0.6 + intensity * 0.4)})`;
+        ctx.fill();
+      });
+
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); };
+  }, [intensity]);
+
+  return <canvas ref={canvasRef} style={{ position:'fixed', inset:0, zIndex:0, pointerEvents:'none' }} />;
 }
 
-// ─── FLOATING TIMER ───────────────────────────────────────────────────────────
-function FloatingTimer({ secondsLeft }) {
-  const pct   = Math.max(0, secondsLeft / TIMER_SECONDS);
-  const color = timerColor(pct);
-  const r = 22, circ = 2 * Math.PI * r;
-  return (
-    <div className={`float-timer${pct <= 0.2 ? ' urgent' : ''}`}>
-      <svg width="60" height="60" viewBox="0 0 60 60" style={{position:'absolute',top:0,left:0}}>
-        <circle cx="30" cy="30" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3.5"/>
-        <circle cx="30" cy="30" r={r} fill="none" stroke={color} strokeWidth="3.5"
-          strokeDasharray={`${pct*circ} ${circ}`} strokeDashoffset={circ/4} strokeLinecap="round"
-          style={{transition:'stroke-dasharray .6s ease,stroke .4s ease'}}/>
-      </svg>
-      <span className="ft-num" style={{color}}>{secondsLeft}</span>
-      <span className="ft-lbl">SEC</span>
-    </div>
-  );
-}
+/* ─── FLOATING TIMER ─────────────────────────────────────────────────────── */
+function FloatingTimer({ seconds }) {
+  const pct   = Math.max(0, seconds / TIMER_TOTAL);
+  const r     = 22, circ = 2 * Math.PI * r;
+  const color = seconds <= 5 ? '#f87171' : seconds <= 15 ? '#fb923c' : seconds <= 30 ? '#c084fc' : '#818cf8';
+  const isCrit = seconds <= 5;
 
-// ─── COUNTDOWN RING ───────────────────────────────────────────────────────────
-function Ring({ secondsLeft }) {
-  const pct = Math.max(0, secondsLeft / TIMER_SECONDS);
-  const color = timerColor(pct);
-  const r = 56, circ = 2 * Math.PI * r;
   return (
-    <div className="ring-wrap">
-      <svg width="148" height="148" viewBox="0 0 148 148">
-        <circle cx="74" cy="74" r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6"/>
-        <circle cx="74" cy="74" r={r} fill="none" stroke={color} strokeWidth="6"
-          strokeDasharray={`${pct*circ} ${circ}`} strokeDashoffset={circ/4} strokeLinecap="round"
-          style={{transition:'stroke-dasharray .6s ease,stroke .4s ease',filter:`drop-shadow(0 0 8px ${color}88)`}}/>
+    <motion.div
+      className={`floating-timer${isCrit ? ' floating-timer--crit' : ''}`}
+      initial={{ opacity: 0, scale: 0.8, y: 20 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      transition={{ delay: 1, type: 'spring', stiffness: 200 }}
+    >
+      <svg width="60" height="60" viewBox="0 0 60 60" style={{ position:'absolute', top:0, left:0 }}>
+        <circle cx="30" cy="30" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
+        <circle cx="30" cy="30" r={r} fill="none" stroke={color} strokeWidth="3"
+          strokeDasharray={`${pct * circ} ${circ}`}
+          strokeDashoffset={circ / 4} strokeLinecap="round"
+          style={{ transition: 'stroke-dasharray .6s ease, stroke .4s ease',
+            filter: `drop-shadow(0 0 4px ${color})` }} />
       </svg>
-      <div className="ring-center">
-        <span className="ring-num" style={{color}}>{secondsLeft}</span>
-        <span className="ring-sub">seconds</span>
+      <div className="ft-inner">
+        <motion.span
+          className="ft-num"
+          style={{ color }}
+          animate={isCrit ? { scale: [1, 1.15, 1] } : {}}
+          transition={isCrit ? { repeat: Infinity, duration: 0.4 } : {}}
+        >
+          {seconds}
+        </motion.span>
+        <span className="ft-lbl">SEC</span>
       </div>
+    </motion.div>
+  );
+}
+
+/* ─── COUNTDOWN RING ─────────────────────────────────────────────────────── */
+function CountdownRing({ seconds }) {
+  const pct      = seconds / TIMER_TOTAL;
+  const r        = 110;
+  const circ     = 2 * Math.PI * r;
+  const dash     = pct * circ;
+  const isUrgent = seconds <= 15;
+  const isCrit   = seconds <= 5;
+
+  const ringColor = isCrit
+    ? '#ff4444'
+    : isUrgent
+    ? '#ff8c00'
+    : seconds <= 30
+    ? '#c084fc'
+    : '#818cf8';
+
+  const shadowColor = isCrit ? '#ff4444' : isUrgent ? '#ff8c00' : '#a78bfa';
+
+  return (
+    <motion.div
+      className="ring-container"
+      animate={isCrit ? { scale: [1, 1.015, 1] } : {}}
+      transition={isCrit ? { repeat: Infinity, duration: 0.4 } : {}}
+    >
+      {/* Outer glow rings */}
+      <div className="ring-glow-outer" style={{ boxShadow: `0 0 80px 20px ${shadowColor}22` }} />
+      <div className="ring-glow-mid"   style={{ boxShadow: `0 0 40px 10px ${shadowColor}33` }} />
+
+      <svg width="280" height="280" viewBox="0 0 280 280" style={{ transform: 'rotate(-90deg)' }}>
+        {/* Track */}
+        <circle cx="140" cy="140" r={r} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="8" />
+        {/* Glow duplicate */}
+        <circle cx="140" cy="140" r={r} fill="none"
+          stroke={ringColor} strokeWidth="14" strokeOpacity="0.12"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" />
+        {/* Main arc */}
+        <circle cx="140" cy="140" r={r} fill="none"
+          stroke={ringColor} strokeWidth="8"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+          style={{ transition: 'stroke-dasharray 0.6s ease, stroke 0.4s ease',
+            filter: `drop-shadow(0 0 12px ${ringColor})` }} />
+      </svg>
+
+      {/* Center content */}
+      <div className="ring-center">
+        <div className="ring-label-top">TIME LEFT</div>
+        <motion.div
+          key={seconds}
+          className="ring-digits"
+          style={{ color: ringColor }}
+          initial={{ scale: 1.15, opacity: 0.6 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.25 }}
+        >
+          {pad2(Math.floor(seconds / 60))}:{pad2(seconds % 60)}
+        </motion.div>
+        <div className="ring-label-bot">SECONDS</div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ─── POT DISPLAY ────────────────────────────────────────────────────────── */
+function PotDisplay({ value }) {
+  const [display, setDisplay] = useState(value ?? 0);
+  const targetRef = useRef(value ?? 0);
+
+  useEffect(() => {
+    if (value == null) return;
+    targetRef.current = value;
+    const step = () => {
+      setDisplay(prev => {
+        const diff = targetRef.current - prev;
+        if (Math.abs(diff) < 0.01) return targetRef.current;
+        return prev + diff * 0.08;
+      });
+    };
+    const iv = setInterval(step, 16);
+    return () => clearInterval(iv);
+  }, [value]);
+
+  const formatted = display > 0 ? fmtUSD(display) : '—';
+
+  return (
+    <div className="pot-amount">
+      <span className="pot-currency">$</span>
+      <span className="pot-number">
+        {display > 0 ? Number(display).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00'}
+      </span>
     </div>
   );
 }
 
-// ─── BUYER ROW ────────────────────────────────────────────────────────────────
-function BuyerRow({ buyer, isFirst, index }) {
+/* ─── BUYER CARD ─────────────────────────────────────────────────────────── */
+function BuyerCard({ buyer, rank, isLeader }) {
   const ts = buyer.time?.toDate ? buyer.time.toDate() : buyer.time ? new Date(buyer.time) : null;
+  const timeAgo = ts ? `${pad2(ts.getHours())}:${pad2(ts.getMinutes())}:${pad2(ts.getSeconds())}` : '--:--:--';
+  const colors = ['#fbbf24','#9ca3af','#cd7f32'];
+  const rankColor = rank <= 3 ? colors[rank-1] : 'rgba(255,255,255,0.3)';
+
   return (
-    <div className={`b-row${isFirst?' b-row--top':''}`} style={{animationDelay:`${index*.04}s`}}>
-      <span className="b-rank">{isFirst ? '👑' : `#${index+1}`}</span>
-      <a className="b-addr" href={`https://solscan.io/account/${buyer.wallet}`} target="_blank" rel="noreferrer">
-        {short(buyer.wallet)}
-      </a>
-      <span className="b-time">{ts ? ts.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—'}</span>
-      {isFirst && <span className="b-pill">Leading</span>}
-    </div>
+    <motion.div
+      className={`buyer-card${isLeader ? ' buyer-card--leader' : ''}`}
+      initial={{ opacity: 0, x: -20, scale: 0.96 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 20 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+      layout
+    >
+      {isLeader && (
+        <div className="leader-bar" />
+      )}
+      <div className="buyer-rank" style={{ color: rankColor }}>
+        {rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : `#${rank}`}
+      </div>
+      <div className="buyer-avatar">
+        {buyer.wallet?.slice(0,2).toUpperCase() || '??'}
+      </div>
+      <div className="buyer-info">
+        <a href={`https://solscan.io/account/${buyer.wallet}`} target="_blank" rel="noreferrer" className="buyer-addr">
+          {short(buyer.wallet)}
+        </a>
+        <div className="buyer-time">{timeAgo}</div>
+      </div>
+      {isLeader && (
+        <motion.div
+          className="leader-badge"
+          animate={{ opacity: [1, 0.6, 1] }}
+          transition={{ repeat: Infinity, duration: 1.2 }}
+        >
+          LEADER
+        </motion.div>
+      )}
+    </motion.div>
   );
 }
 
-// ─── WINNER ROW ───────────────────────────────────────────────────────────────
+/* ─── WINNER ROW ─────────────────────────────────────────────────────────── */
 function WinnerRow({ winner, index }) {
-  const date = winner.timestamp?.toDate ? new Date(winner.timestamp.toDate()).toLocaleDateString() : '—';
+  const date = winner.timestamp?.toDate
+    ? new Date(winner.timestamp.toDate()).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'})
+    : '—';
   return (
-    <div className="w-row" style={{animationDelay:`${index*.05}s`}}>
-      <span className="w-rank">#{index+1}</span>
-      <a className="w-addr" href={`https://solscan.io/account/${winner.wallet}`} target="_blank" rel="noreferrer">
+    <motion.div
+      className="winner-row"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.04 }}
+    >
+      <span className="wr-rank">#{index+1}</span>
+      <a className="wr-addr" href={`https://solscan.io/account/${winner.wallet}`} target="_blank" rel="noreferrer">
         {short(winner.wallet)}
       </a>
-      <span className="w-amt">{fmtUSD(winner.amountUsd)}</span>
-      <span className="w-date">{date}</span>
+      <span className="wr-amt">{fmtUSD(winner.amountUsd)}</span>
+      <span className="wr-date">{date}</span>
       {winner.txSignature &&
-        <a className="w-tx" href={`https://solscan.io/tx/${winner.txSignature}`} target="_blank" rel="noreferrer">↗</a>}
+        <a className="wr-tx" href={`https://solscan.io/tx/${winner.txSignature}`} target="_blank" rel="noreferrer">↗</a>}
+    </motion.div>
+  );
+}
+
+/* ─── STAT BOX ───────────────────────────────────────────────────────────── */
+function StatBox({ label, value, accent }) {
+  return (
+    <div className={`stat-box${accent ? ' stat-box--accent' : ''}`}>
+      <div className="stat-box-label">{label}</div>
+      <div className="stat-box-value">{value}</div>
     </div>
   );
 }
 
-// ─── APP ──────────────────────────────────────────────────────────────────────
+/* ─── MAIN APP ───────────────────────────────────────────────────────────── */
 export default function App() {
   const [buyers,    setBuyers]    = useState([]);
   const [winners,   setWinners]   = useState([]);
   const [stats,     setStats]     = useState({});
   const [price,     setPrice]     = useState(null);
   const [potUsd,    setPotUsd]    = useState(null);
-  const [countdown, setCountdown] = useState(TIMER_SECONDS);
+  const [countdown, setCountdown] = useState(TIMER_TOTAL);
   const [copied,    setCopied]    = useState(false);
-  const [tab,       setTab]       = useState('live');
+  const [tab,       setTab]       = useState('buyers');
   const nextRef = useRef(null);
 
+  const isUrgent   = countdown <= 15;
+  const isCritical = countdown <= 5;
+  const intensity  = isCritical ? 1 : isUrgent ? 0.6 : 0.15;
+
   useEffect(() => {
-    const q = query(collection(db,'buyers'), orderBy('time','desc'), limit(50));
+    const q = query(collection(db,'buyers'), orderBy('time','desc'), limit(20));
     return onSnapshot(q, s => setBuyers(s.docs.map(d => ({id:d.id,...d.data()}))));
   }, []);
 
   useEffect(() => {
-    const q = query(collection(db,'winners'), orderBy('timestamp','desc'), limit(30));
+    const q = query(collection(db,'winners'), orderBy('timestamp','desc'), limit(20));
     return onSnapshot(q, s => setWinners(s.docs.map(d => ({id:d.id,...d.data()}))));
   }, []);
 
@@ -133,14 +346,14 @@ export default function App() {
       const d = snap.data();
       setStats(d);
       if (d.currentPotUsd != null) setPotUsd(d.currentPotUsd);
-      if (d.lastBuyTime) nextRef.current = d.lastBuyTime.toMillis() + TIMER_SECONDS * 1000;
+      if (d.lastBuyTime) nextRef.current = d.lastBuyTime.toMillis() + TIMER_TOTAL * 1000;
     });
   }, []);
 
   useEffect(() => {
     const iv = setInterval(() => {
       if (nextRef.current)
-        setCountdown(Math.min(TIMER_SECONDS, Math.max(0, Math.ceil((nextRef.current - Date.now()) / 1000))));
+        setCountdown(Math.min(TIMER_TOTAL, Math.max(0, Math.ceil((nextRef.current - Date.now()) / 1000))));
     }, 500);
     return () => clearInterval(iv);
   }, []);
@@ -158,131 +371,144 @@ export default function App() {
     go(); const iv = setInterval(go, 30000); return () => clearInterval(iv);
   }, []);
 
-  const copy = () => navigator.clipboard.writeText(TOKEN_CA).then(() => { setCopied(true); setTimeout(()=>setCopied(false),2000); });
-  const pct  = Math.max(0, countdown / TIMER_SECONDS);
-  const col  = timerColor(pct);
+  const copy = () =>
+    navigator.clipboard.writeText(TOKEN_CA).then(() => { setCopied(true); setTimeout(()=>setCopied(false),2000); });
 
   return (
-    <div className="app">
-      <FloatingTimer secondsLeft={countdown} />
+    <div className={`app${isCritical ? ' app--critical' : isUrgent ? ' app--urgent' : ''}`}>
+      <Background intensity={intensity} />
+      <FloatingTimer seconds={countdown} />
 
-      {/* NAV */}
-      <nav className="nav">
-        <div className="nav-brand">
-          <img src="/logo.png" alt="" className="nav-logo" onError={e=>e.target.style.display='none'}/>
-          <span className="nav-name">Last Buyer Wins</span>
-          <span className="nav-ticker">$LBW</span>
-        </div>
-        <a className="nav-x" href={X_LINK} target="_blank" rel="noreferrer">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.73-8.835L1.254 2.25H8.08l4.259 5.63zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-          </svg>
-          Twitter
-        </a>
-      </nav>
-
-      {/* HERO */}
-      <section className="hero">
-        <div className="hero-eyebrow">Solana Memecoin</div>
-
-        <h1 className="hero-h1">
-          The last one<br/>
-          <em style={{color:col,fontStyle:'normal'}}>takes it all.</em>
-        </h1>
-
-        <p className="hero-p">
-          Every qualifying buy resets a 60-second countdown.
-          When the clock hits zero, <strong>100% of accumulated creator rewards</strong> are
-          sent automatically to the last buyer's wallet.
-          Miss the window — someone else walks away with your pot.
-        </p>
-
-        {/* Eligibility callout */}
-        <div className="eligibility">
-          <span className="elig-icon">⚡</span>
-          <div>
-            <strong>Minimum buy required: ${MIN_BUY_USD}</strong>
-            <p>Purchases under ${MIN_BUY_USD} USD do not qualify. Only wallets that buy
-            ${MIN_BUY_USD}+ worth of $LBW are entered into the countdown and eligible to win.</p>
+      {/* ── HEADER ── */}
+      <motion.header
+        className="header"
+        initial={{ y: -60, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.7, ease: 'easeOut' }}
+      >
+        <div className="header-inner">
+          <div className="header-brand">
+            <div className="brand-dot" />
+            <span className="brand-name">LAST BUYER WINS</span>
+            <span className="brand-tag">$LBW</span>
           </div>
+          <nav className="header-nav">
+            <a href={X_LINK} target="_blank" rel="noreferrer" className="nav-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.73-8.835L1.254 2.25H8.08l4.259 5.63zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+              Follow
+            </a>
+            {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' && (
+              <a href={`https://dexscreener.com/solana/${TOKEN_CA}`} target="_blank" rel="noreferrer" className="nav-btn nav-btn--chart">
+                Chart ↗
+              </a>
+            )}
+          </nav>
         </div>
+      </motion.header>
 
-        <div className="ca-row">
-          <span className="ca-tag">CA</span>
-          <span className="ca-val">{TOKEN_CA === 'PASTE_YOUR_CA_HERE' ? 'Coming soon…' : TOKEN_CA}</span>
-          {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' &&
-            <button className="ca-btn" onClick={copy}>{copied ? '✓' : 'Copy'}</button>}
-        </div>
-      </section>
+      <main className="main">
 
-      {/* HOW IT WORKS */}
-      <section className="how">
-        <h2 className="section-h">How it works</h2>
-        <div className="cards-3">
-          {[
-            { n:'01', icon:'💸', h:'Buy $10+ of $LBW',   b:'Only buys of $10 or more count. Smaller buys are ignored by the contract.' },
-            { n:'02', icon:'⏱',  h:'Timer resets',        b:'Every qualifying buy resets the 60-second countdown. The pot keeps growing.' },
-            { n:'03', icon:'🏆', h:'Last wallet wins',    b:'60 seconds of silence and the last qualifying buyer gets everything — automatically.' },
-          ].map(c => (
-            <div className="card3" key={c.n}>
-              <span className="card3-n">{c.n}</span>
-              <span className="card3-icon">{c.icon}</span>
-              <h3 className="card3-h">{c.h}</h3>
-              <p  className="card3-p">{c.b}</p>
+        {/* ── HERO ── */}
+        <section className="hero">
+          <motion.div
+            className="hero-eyebrow"
+            initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.3 }}
+          >
+            <span className="live-dot" />
+            LIVE ON SOLANA
+          </motion.div>
+
+          <motion.h1
+            className="hero-title"
+            initial={{ opacity:0, y:30 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.45 }}
+          >
+            The Last Buyer<br />
+            <span className="hero-title-accent">Takes Everything.</span>
+          </motion.h1>
+
+          <motion.p
+            className="hero-sub"
+            initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.6 }}
+          >
+            Buy $10+ of $LBW. Reset the 60-second timer. If nobody buys after you —
+            every accumulated creator reward is <strong>sent directly to your wallet.</strong>
+          </motion.p>
+
+          {/* ELIGIBILITY */}
+          <motion.div
+            className="eligibility-badge"
+            initial={{ opacity:0, scale:0.9 }} animate={{ opacity:1, scale:1 }} transition={{ delay:0.75 }}
+          >
+            <span className="elig-icon">⚡</span>
+            Minimum qualifying buy: <strong>${MIN_BUY_USD} USD</strong> — smaller buys are ignored
+          </motion.div>
+
+          {/* CA */}
+          <motion.div
+            className="ca-wrap"
+            initial={{ opacity:0, y:15 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.9 }}
+          >
+            <div className="ca-box">
+              <span className="ca-label">CA</span>
+              <span className="ca-addr">{TOKEN_CA === 'PASTE_YOUR_CA_HERE' ? 'Coming soon…' : TOKEN_CA}</span>
+              {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' &&
+                <motion.button className="ca-copy" onClick={copy} whileTap={{ scale:0.95 }}>
+                  {copied ? '✓ Copied' : 'Copy'}
+                </motion.button>}
             </div>
-          ))}
-        </div>
-      </section>
+          </motion.div>
+        </section>
 
-      {/* LIVE */}
-      <section className="live">
-        <h2 className="section-h">Live arena</h2>
+        {/* ── ARENA ── */}
+        <section className="arena">
 
-        <div className="live-layout">
-
-          {/* Left — timer + stats */}
-          <div className="stats-col">
-            <div className="stat-card">
-              <p className="stat-label">Time remaining</p>
-              <Ring secondsLeft={countdown} />
-              <p className="stat-hint" style={{color:col}}>
-                {countdown === 0 ? '💸 Payout triggered!' : countdown <= 12 ? '🚨 Almost there!' : 'Countdown active'}
-              </p>
+          {/* Timer column */}
+          <motion.div
+            className="arena-timer"
+            initial={{ opacity:0, scale:0.85 }} animate={{ opacity:1, scale:1 }} transition={{ delay:0.5, duration:0.8 }}
+          >
+            <div className="timer-header">
+              <span className="timer-header-text">PAYOUT COUNTDOWN</span>
+              {isUrgent && (
+                <motion.span
+                  className="timer-urgent-badge"
+                  animate={{ opacity:[1,0.4,1] }}
+                  transition={{ repeat:Infinity, duration:0.6 }}
+                >
+                  {isCritical ? '🚨 FINAL SECONDS' : '⚠ HURRY UP'}
+                </motion.span>
+              )}
             </div>
 
-            <div className="stat-card">
-              <p className="stat-label">Current pot</p>
-              <p className="stat-big" style={{color:col}}>{potUsd != null && potUsd > 0 ? fmtUSD(potUsd) : '—'}</p>
+            <CountdownRing seconds={countdown} />
+
+            {/* Pot */}
+            <div className="pot-card">
+              <div className="pot-label">CURRENT POT</div>
+              <PotDisplay value={potUsd} />
+              <div className="pot-sub">up for grabs right now</div>
             </div>
 
-            <div className="stat-card stat-card--grid">
-              <div>
-                <p className="stat-label">Total paid out</p>
-                <p className="stat-med">{stats.totalPaidUsd != null ? fmtUSD(stats.totalPaidUsd) : '—'}</p>
-              </div>
-              <div>
-                <p className="stat-label">Winners</p>
-                <p className="stat-med">{stats.totalWinners ?? '—'}</p>
-              </div>
-              {price && <>
-                <div>
-                  <p className="stat-label">Token price</p>
-                  <p className="stat-med">${price.toFixed(8)}</p>
-                </div>
-                <div>
-                  <p className="stat-label">Min buy</p>
-                  <p className="stat-med">${MIN_BUY_USD}</p>
-                </div>
-              </>}
+            {/* Stats */}
+            <div className="mini-stats">
+              <StatBox label="Total paid" value={stats.totalPaidUsd != null ? fmtUSD(stats.totalPaidUsd) : '—'} />
+              <StatBox label="Winners"    value={stats.totalWinners ?? '—'} />
+              <StatBox label="Price"      value={price ? `$${price.toFixed(8)}` : '…'} />
+              <StatBox label="Min buy"    value={`$${MIN_BUY_USD}`} accent />
             </div>
-          </div>
+          </motion.div>
 
-          {/* Right — feed */}
-          <div className="feed-col">
+          {/* Feed column */}
+          <motion.div
+            className="arena-feed"
+            initial={{ opacity:0, x:30 }} animate={{ opacity:1, x:0 }} transition={{ delay:0.6 }}
+          >
             <div className="feed-tabs">
-              <button className={`ftab${tab==='live'?' ftab--on':''}`} onClick={()=>setTab('live')}>
-                <span className={`dot${tab==='live'?' dot--live':''}`}/>
-                Live buyers
+              <button className={`ftab${tab==='buyers'?' ftab--on':''}`} onClick={()=>setTab('buyers')}>
+                <span className={`tab-dot${tab==='buyers'?' tab-dot--live':''}`}/>
+                Live Buyers
               </button>
               <button className={`ftab${tab==='winners'?' ftab--on':''}`} onClick={()=>setTab('winners')}>
                 🏆 Hall of Fame
@@ -290,39 +516,92 @@ export default function App() {
             </div>
 
             <div className="feed-body">
-              {tab === 'live' && (
-                buyers.length === 0
-                  ? <div className="feed-empty">No qualifying buys yet.<br/>Be the first with $10+.</div>
-                  : <>
-                      <div className="feed-head">
-                        <span>Rank</span><span>Wallet</span><span>Time</span><span/>
+              <AnimatePresence mode="popLayout">
+                {tab === 'buyers' && (
+                  <motion.div key="buyers" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
+                    {buyers.length === 0 ? (
+                      <div className="feed-empty">
+                        <div className="feed-empty-icon">👀</div>
+                        <div>No qualifying buys yet.</div>
+                        <div className="feed-empty-sub">Be the first — buy $10+ and lead the countdown.</div>
                       </div>
-                      {buyers.map((b,i) => <BuyerRow key={b.id} buyer={b} isFirst={i===0} index={i}/>)}
-                    </>
-              )}
-              {tab === 'winners' && (
-                winners.length === 0
-                  ? <div className="feed-empty">No winners yet.<br/>Could be you.</div>
-                  : <>
-                      <div className="feed-head winners-head">
-                        <span>#</span><span>Wallet</span><span>Won</span><span>Date</span><span/>
-                      </div>
-                      {winners.map((w,i) => <WinnerRow key={w.id} winner={w} index={i}/>)}
-                    </>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
+                    ) : (
+                      <AnimatePresence>
+                        {buyers.map((b,i) => (
+                          <BuyerCard key={b.id} buyer={b} rank={i+1} isLeader={i===0} />
+                        ))}
+                      </AnimatePresence>
+                    )}
+                  </motion.div>
+                )}
 
-      {/* FOOTER */}
+                {tab === 'winners' && (
+                  <motion.div key="winners" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
+                    {winners.length === 0 ? (
+                      <div className="feed-empty">
+                        <div className="feed-empty-icon">🏆</div>
+                        <div>No winners yet.</div>
+                        <div className="feed-empty-sub">The first winner could be you.</div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="winner-head">
+                          <span>#</span><span>Wallet</span><span>Won</span><span>Date</span><span />
+                        </div>
+                        {winners.map((w,i) => <WinnerRow key={w.id} winner={w} index={i} />)}
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+
+        </section>
+
+        {/* ── HOW IT WORKS ── */}
+        <section className="how">
+          <motion.h2
+            className="how-title"
+            initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }}
+            viewport={{ once:true }} transition={{ duration:0.6 }}
+          >
+            How it works
+          </motion.h2>
+          <div className="how-grid">
+            {[
+              { n:'01', icon:'💸', h:'Buy $10+ of $LBW',   b:'Purchases under $10 are ignored. Only qualifying buys reset the timer and enter you into the game.' },
+              { n:'02', icon:'⏱',  h:'Timer resets',        b:'Every qualifying buy resets the 60-second countdown. The more people buy, the bigger the pot grows.' },
+              { n:'03', icon:'🏆', h:'Last buyer wins',     b:'60 seconds of silence. The last qualifying buyer receives 100% of all accumulated creator fees — automatically.' },
+            ].map((c,i) => (
+              <motion.div
+                key={c.n} className="how-card"
+                initial={{ opacity:0, y:30 }} whileInView={{ opacity:1, y:0 }}
+                viewport={{ once:true }} transition={{ delay:i*0.15, duration:0.6 }}
+                whileHover={{ y:-4, transition:{ duration:0.2 } }}
+              >
+                <div className="how-num">{c.n}</div>
+                <div className="how-icon">{c.icon}</div>
+                <h3 className="how-h">{c.h}</h3>
+                <p  className="how-p">{c.b}</p>
+              </motion.div>
+            ))}
+          </div>
+        </section>
+
+      </main>
+
+      {/* ── FOOTER ── */}
       <footer className="footer">
-        <div className="footer-links">
-          <a href={X_LINK} target="_blank" rel="noreferrer">𝕏 Twitter</a>
-          {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' && <>
-            <a href={`https://dexscreener.com/solana/${TOKEN_CA}`} target="_blank" rel="noreferrer">DexScreener</a>
-            <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
-          </>}
+        <div className="footer-inner">
+          <span className="footer-name">LAST BUYER WINS · $LBW</span>
+          <div className="footer-links">
+            <a href={X_LINK} target="_blank" rel="noreferrer">Twitter</a>
+            {TOKEN_CA !== 'PASTE_YOUR_CA_HERE' && <>
+              <a href={`https://dexscreener.com/solana/${TOKEN_CA}`} target="_blank" rel="noreferrer">DexScreener</a>
+              <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">Solscan</a>
+            </>}
+          </div>
         </div>
       </footer>
     </div>
