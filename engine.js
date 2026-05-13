@@ -308,7 +308,7 @@ async function tick() {
 process.on('unhandledRejection', r => console.error('[LBW] unhandledRejection:', r));
 process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', e));
 
-startAutoClaimFees(connection, creatorKP, log);
+startAutoClaimFees(connection, wallet, console.log)
 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
