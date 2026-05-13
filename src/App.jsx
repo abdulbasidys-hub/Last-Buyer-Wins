@@ -49,7 +49,7 @@ function Background({ intensity }) {
       vx: (Math.random() - 0.5) * 0.3,
       vy: (Math.random() - 0.5) * 0.3,
       alpha: Math.random() * 0.5 + 0.1,
-      color: Math.random() > 0.5 ? '180,120,255' : Math.random() > 0.5 ? '80,140,255' : '255,200,80',
+      color: Math.random() > 0.5 ? '34,197,94' : Math.random() > 0.5 ? '22,163,74' : '200,255,210',
     }));
 
     let raf;
@@ -64,19 +64,19 @@ function Background({ intensity }) {
       const gy2 = canvas.height * (0.7 + Math.sin(t * 0.8) * 0.2);
 
       const g1 = ctx.createRadialGradient(gx1, gy1, 0, gx1, gy1, canvas.width * 0.55);
-      g1.addColorStop(0, `rgba(120,60,220,${0.13 + intensity * 0.07})`);
+      g1.addColorStop(0, `rgba(20,80,30,${0.18 + intensity * 0.12})`);
       g1.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g1; ctx.fillRect(0,0,canvas.width,canvas.height);
 
       const g2 = ctx.createRadialGradient(gx2, gy2, 0, gx2, gy2, canvas.width * 0.5);
-      g2.addColorStop(0, `rgba(30,80,220,${0.10 + intensity * 0.05})`);
+      g2.addColorStop(0, `rgba(10,40,10,${0.12 + intensity * 0.08})`);
       g2.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g2; ctx.fillRect(0,0,canvas.width,canvas.height);
 
       const sx = canvas.width * (0.5 + Math.sin(t * 0.3) * 0.4);
       const sg = ctx.createLinearGradient(sx - 200, 0, sx + 200, canvas.height * 0.6);
       sg.addColorStop(0, 'rgba(0,0,0,0)');
-      sg.addColorStop(0.5, `rgba(200,160,255,${0.03 + intensity * 0.03})`);
+      sg.addColorStop(0.5, `rgba(34,197,94,${0.02 + intensity * 0.03})`);
       sg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = sg; ctx.fillRect(0,0,canvas.width,canvas.height);
 
@@ -106,7 +106,7 @@ function Background({ intensity }) {
 function FloatingTimer({ seconds }) {
   const pct   = Math.max(0, seconds / TIMER_TOTAL);
   const r     = 22, circ = 2 * Math.PI * r;
-  const color = seconds <= 5 ? '#f87171' : seconds <= 15 ? '#fb923c' : seconds <= 30 ? '#c084fc' : '#818cf8';
+  const color = seconds <= 5 ? '#ef4444' : seconds <= 15 ? '#fb923c' : seconds <= 30 ? '#22c55e' : '#22c55e';
   const isCrit = seconds <= 5;
 
   return (
@@ -148,8 +148,8 @@ function CountdownRing({ seconds }) {
   const isUrgent = seconds <= 15;
   const isCrit   = seconds <= 5;
 
-  const ringColor = isCrit ? '#ff4444' : isUrgent ? '#ff8c00' : seconds <= 30 ? '#c084fc' : '#818cf8';
-  const shadowColor = isCrit ? '#ff4444' : isUrgent ? '#ff8c00' : '#a78bfa';
+  const ringColor = isCrit ? '#ef4444' : isUrgent ? '#fb923c' : '#22c55e';
+  const shadowColor = isCrit ? '#ef4444' : isUrgent ? '#fb923c' : '#22c55e';
 
   return (
     <motion.div
@@ -372,7 +372,7 @@ export default function App() {
               className="brand-logo"
               onError={e => e.target.style.display = 'none'}
             />
-            <span className="brand-name">LAST BUYER WINS</span>
+            <span className="brand-name">LAST BUYER <span>WINS</span></span>
           </div>
           <nav className="header-nav">
             <a href={X_LINK} target="_blank" rel="noreferrer" className="nav-btn">
@@ -553,7 +553,7 @@ export default function App() {
             initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }}
             viewport={{ once:true }} transition={{ duration:0.6 }}
           >
-            How it works
+            How it <span>works</span>
           </motion.h2>
           <div className="how-grid">
             {[

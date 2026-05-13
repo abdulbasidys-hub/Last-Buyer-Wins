@@ -1,6 +1,5 @@
 'use strict';
 require('dotenv').config();
-const { startAutoClaimFees } = require("./claimFees");
 
 // ─── VALIDATE ENV EARLY ───────────────────────────────────────────────────────
 const REQUIRED = ['TOKEN_CA', 'CREATOR_PRIVATE_KEY', 'SOLANATRACKER_API_KEY', 'FIREBASE_SERVICE_ACCOUNT_JSON'];
@@ -92,11 +91,39 @@ async function sendSol(toAddress, lamports) {
 
 // ─── SOL/USD PRICE (Jupiter) ─────────────────────────────────────────────────
 async function fetchSolPriceUsd() {
-  try {
-    const res  = await fetch('https://price.jup.ag/v6/price?ids=So11111111111111111111111111111111111111112');
-    const data = await res.json();
-    return data?.data?.So11111111111111111111111111111111111111112?.price ?? null;
-  } catch { return null; }
+  // Try multiple sources in order — Jupiter v6 endpoint changed
+  const attempts = [
+    // 1. Jupiter price API v2
+    async () => {
+      const res  = await fetch('https://price.jup.ag/v4/price?ids=SOL', { timeout: 6000 });
+      const data = await res.json();
+      return data?.data?.SOL?.price ?? null;
+    },
+    // 2. CoinGecko simple price (no key needed)
+    async () => {
+      const res  = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', { timeout: 6000 });
+      const data = await res.json();
+      return data?.solana?.usd ?? null;
+    },
+    // 3. Binance public ticker
+    async () => {
+      const res  = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { timeout: 6000 });
+      const data = await res.json();
+      return data?.price ? parseFloat(data.price) : null;
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const price = await attempt();
+      if (price && !isNaN(price) && price > 0) {
+        console.log(`[LBW] SOL price: $${parseFloat(price).toFixed(2)}`);
+        return parseFloat(price);
+      }
+    } catch {}
+  }
+  console.warn('[LBW] Could not fetch SOL price from any source');
+  return null;
 }
 
 // ─── SOLANATRACKER TRADES ────────────────────────────────────────────────────
@@ -308,9 +335,7 @@ async function tick() {
 process.on('unhandledRejection', r => console.error('[LBW] unhandledRejection:', r));
 process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', e));
 
-startAutoClaimFees(connection, wallet, console.log)
-
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
-cron.schedule('*/3 * * * * *', tick);
-console.log('[LBW] Scheduler started — ticking every 3 seconds');
+cron.schedule('*/15 * * * * *', tick);
+console.log('[LBW] Scheduler started — ticking every 15 seconds');
