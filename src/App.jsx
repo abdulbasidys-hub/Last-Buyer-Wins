@@ -5,7 +5,7 @@ import { getFirestore, collection, query, orderBy, limit, onSnapshot, doc } from
 
 /* ─── CONFIG ──────────────────────────────────────────────────────────────── */
 const TOKEN_CA    = 'PASTE_YOUR_CA_HERE';
-const X_LINK      = 'https://x.com/PASTE_YOUR_X_HERE';
+const X_LINK      = 'https://x.com/PASTE';
 const API_KEY     = import.meta.env.VITE_TRACKER_CODE;
 const MIN_BUY_USD = 10;
 const TIMER_TOTAL = 60;
