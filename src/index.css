@@ -357,7 +357,35 @@ a { color: inherit; text-decoration: none; }
 .feed-empty-icon { font-size: 2.4rem; margin-bottom: 12px; }
 .feed-empty-sub  { font-size: .78rem; color: var(--dim); }
 
-/* Buyer card */
+.buyer-share {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  margin-left: auto; flex-shrink: 0;
+}
+.buyer-pct {
+  font-family: var(--mono); font-size: .8rem; font-weight: 500;
+  color: var(--green);
+}
+.buyer-card--leader .buyer-pct { color: var(--green); }
+.buyer-sol {
+  font-family: var(--mono); font-size: .65rem; color: var(--dim);
+}
+
+.feed-head-top10 {
+  display: grid; grid-template-columns: 1fr 60px 80px;
+  gap: 8px; padding: 9px 18px;
+  font-family: var(--mono); font-size: .57rem; letter-spacing: .12em;
+  color: var(--dim); text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+.feed-slots-left {
+  padding: 12px 18px;
+  font-family: var(--mono); font-size: .68rem;
+  color: var(--dim); text-align: center;
+  border-top: 1px solid var(--border);
+  letter-spacing: .04em;
+}
+
+/* Buyer card — update layout for share column */
 .buyer-card {
   display: flex; align-items: center; gap: 12px;
   padding: 12px 18px;

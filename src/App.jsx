@@ -220,9 +220,12 @@ function PotDisplay({ value }) {
 }
 
 /* ─── BUYER CARD ─────────────────────────────────────────────────────────── */
-function BuyerCard({ buyer, isFirst }) {
-  const ts = buyer.time?.toDate ? buyer.time.toDate() : buyer.time ? new Date(buyer.time) : null;
-  const timeAgo = ts ? `${pad2(ts.getHours())}:${pad2(ts.getMinutes())}:${pad2(ts.getSeconds())}` : '--:--:--';
+function BuyerCard({ entry, isFirst }) {
+  const buyer  = entry;
+  const ts     = buyer.time?.toDate ? buyer.time.toDate() : buyer.time ? new Date(buyer.time) : null;
+  const timeStr = ts ? `${pad2(ts.getHours())}:${pad2(ts.getMinutes())}:${pad2(ts.getSeconds())}` : '--:--:--';
+  const pctStr  = buyer.pct != null ? `${(buyer.pct * 100).toFixed(1)}%` : null;
+  const solStr  = buyer.sol != null && buyer.sol > 0 ? `${buyer.sol.toFixed(4)} SOL` : null;
 
   return (
     <motion.div
@@ -241,7 +244,11 @@ function BuyerCard({ buyer, isFirst }) {
         <a href={`https://solscan.io/account/${buyer.wallet}`} target="_blank" rel="noreferrer" className="buyer-addr">
           {short(buyer.wallet)}
         </a>
-        <div className="buyer-time">{timeAgo}</div>
+        <div className="buyer-time">{timeStr}</div>
+      </div>
+      <div className="buyer-share">
+        {pctStr && <span className="buyer-pct">{pctStr}</span>}
+        {solStr && <span className="buyer-sol">{solStr}</span>}
       </div>
       {isFirst && (
         <motion.div
@@ -298,6 +305,7 @@ export default function App() {
   const [price,     setPrice]     = useState(null);
   const [potUsd,    setPotUsd]    = useState(null);
   const [potSol,    setPotSol]    = useState(null);
+  const [top10,     setTop10]     = useState([]);
   const [countdown, setCountdown] = useState(TIMER_TOTAL);
   const [copied,    setCopied]    = useState(false);
   const [tab,       setTab]       = useState('buyers');
@@ -324,6 +332,7 @@ export default function App() {
       setStats(d);
       if (d.currentPotUsd != null) setPotUsd(d.currentPotUsd);
       if (d.currentPotSol != null) setPotSol(d.currentPotSol);
+      if (Array.isArray(d.top10))  setTop10(d.top10);
       if (d.lastBuyTime) nextRef.current = d.lastBuyTime.toMillis() + TIMER_TOTAL * 1000;
     });
   }, []);
@@ -413,8 +422,8 @@ export default function App() {
               onError={e => e.target.style.display = 'none'}
             />
             <h1 className="hero-title">
-              Last Buyer<br />
-              <span className="hero-title-accent">Takes Everything</span>
+              The Last Buyer<br />
+              <span className="hero-title-accent">Takes Everything.</span>
             </h1>
           </motion.div>
 
@@ -506,18 +515,30 @@ export default function App() {
               <AnimatePresence mode="popLayout">
                 {tab === 'buyers' && (
                   <motion.div key="buyers" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
-                    {buyers.length === 0 ? (
+                    {top10.length === 0 ? (
                       <div className="feed-empty">
                         <div className="feed-empty-icon">👀</div>
                         <div>No qualifying buys yet.</div>
                         <div className="feed-empty-sub">Be the first — buy $10+ and lead the countdown.</div>
                       </div>
                     ) : (
-                      <AnimatePresence>
-                        {buyers.map((b,i) => (
-                          <BuyerCard key={b.id} buyer={b} isFirst={i===0} />
-                        ))}
-                      </AnimatePresence>
+                      <>
+                        <div className="feed-head-top10">
+                          <span>Wallet</span>
+                          <span>Share</span>
+                          <span>Est. SOL</span>
+                        </div>
+                        <AnimatePresence>
+                          {top10.map((entry, i) => (
+                            <BuyerCard key={entry.wallet} entry={entry} isFirst={i === 0} />
+                          ))}
+                        </AnimatePresence>
+                        {top10.length < 10 && (
+                          <div className="feed-slots-left">
+                            {10 - top10.length} slot{10 - top10.length !== 1 ? 's' : ''} remaining — buy to claim one
+                          </div>
+                        )}
+                      </>
                     )}
                   </motion.div>
                 )}
