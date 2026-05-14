@@ -187,76 +187,17 @@ async function fetchRecentBuys() {
   }
 }
 
-// ─── PAYOUT HELPERS ──────────────────────────────────────────────────────────
-const MIN_POT_FOR_SPLIT = parseFloat(process.env.MIN_POT_FOR_SPLIT || '1.0'); // SOL
-
-/**
- * Build ordered list of up to 10 unique wallets from recent buys.
- * Most recent buyer first. One slot per wallet — if a wallet bought multiple
- * times, only their most recent buy counts (which is already first in the array).
- */
-function buildTop10(buys) {
-  const seen = new Set();
-  const unique = [];
-  for (const b of buys) {
-    const w = b.wallet;
-    if (!w || seen.has(w)) continue;
-    seen.add(w);
-    unique.push(w);
-    if (unique.length >= 10) break;
-  }
-  return unique; // unique[0] = leader
-}
-
-/**
- * Compute live share display for Firestore (no actual sending).
- * Returns array of { wallet, pct, sol, role } for the frontend to display.
- */
-function computeShares(top10, sendableSol) {
-  if (top10.length === 0) return [];
-
-  const useSplit = sendableSol >= MIN_POT_FOR_SPLIT && top10.length > 1;
-
-  return top10.map((wallet, i) => {
-    let pct;
-    if (!useSplit) {
-      pct = i === 0 ? 1.0 : 0;
-    } else {
-      if (i === 0) {
-        pct = 0.5; // leader always 50%
-      } else {
-        const poolMembers = top10.length - 1; // positions 2-10
-        pct = 0.5 / poolMembers;
-      }
-    }
-    return {
-      wallet,
-      pct:  parseFloat(pct.toFixed(6)),
-      sol:  parseFloat((sendableSol * pct).toFixed(6)),
-      role: i === 0 ? 'leader' : 'pool',
-    };
-  });
-}
-
-/**
- * Compute actual payout amounts.
- * Same logic as computeShares but operates on filtered wallets (creator removed).
- */
-function computePayouts(filteredTop10, sendableSol) {
-  return computeShares(filteredTop10, sendableSol);
-}
-
 // ─── MAIN TICK ───────────────────────────────────────────────────────────────
 async function tick() {
   console.log(`[LBW] ── tick ${new Date().toISOString()} ──`);
 
   try {
-    // 1. Fetch buys from SolanaTracker
+    // 1. Fetch buys
     const buys = await fetchRecentBuys();
     console.log(`[LBW] ${buys.length} buy(s) found after filter`);
 
     if (buys.length > 0) {
-      // Write any new buys to Firestore buyers collection
+      // Detect new ones (not yet written to Firestore)
       const cutoff  = lastSeenTxSig ? buys.findIndex(b => b.txSignature === lastSeenTxSig) : -1;
       const newBuys = cutoff === -1 ? buys.slice(0, 5) : buys.slice(0, cutoff);
 
@@ -274,62 +215,50 @@ async function tick() {
         await batch.commit();
       }
 
-      // Always update in-memory state from freshest API data
+      // Update state with most recent buy
       lastSeenTxSig = buys[0].txSignature;
-      lastBuyTimeMs = buys[0].time.getTime();
+      lastBuyTimeMs  = buys[0].time.getTime();
+
+      await db.doc('stats/global').set({
+        lastBuyTime: Timestamp.fromDate(buys[0].time),
+        lastBuyer:   buys[0].wallet,
+      }, { merge: true });
+
       console.log(`[LBW] Last buyer: ${buys[0].wallet} at ${buys[0].time.toISOString()}`);
 
     } else {
-      console.log(`[LBW] No new buys this tick`);
-    }
-
-    // 2. On boot — if lastBuyTimeMs is still null, seed it from Firestore
-    //    so the timer works immediately after a Railway redeploy
-    if (!lastBuyTimeMs) {
-      const globalDoc = await db.doc('stats/global').get();
-      if (globalDoc.exists) {
-        const d = globalDoc.data();
-        if (d.lastBuyTime) {
-          lastBuyTimeMs = d.lastBuyTime.toMillis();
-          console.log(`[LBW] Seeded lastBuyTimeMs from Firestore: ${new Date(lastBuyTimeMs).toISOString()}`);
-        }
-      }
-      // If still null (first ever run), seed with now so timer starts
+      // No buys returned — still need to write stats/global so the site timer works
       if (!lastBuyTimeMs) {
+        await db.doc('stats/global').set({
+          lastBuyTime:   Timestamp.now(),
+          currentPotSol: 0,
+          currentPotUsd: null,
+        }, { merge: true });
         lastBuyTimeMs = Date.now();
-        console.log(`[LBW] First run — seeding timer with now`);
+        console.log(`[LBW] No buys yet — seeded stats/global with current time`);
+      } else {
+        console.log(`[LBW] No new buys this tick`);
       }
     }
 
-    // 3. Read all buyers from Firestore to build top10
-    //    (always read from Firestore, not from memory — survives redeploys)
-    const allBuysSnap = await db.collection('buyers').orderBy('time', 'desc').limit(100).get();
-    const allBuys     = allBuysSnap.docs.map(d => d.data());
-    const top10wallets = buildTop10(allBuys);
-    console.log(`[LBW] Top ${top10wallets.length} unique wallet(s) this round`);
+    // 2. Update pot display — merge into same doc in one call
+    const balSol    = await getBalanceSol();
+    const sendable  = Math.max(0, balSol - GAS_RESERVE);
+    const solPrice  = await fetchSolPriceUsd();
+    // Use full wallet balance for pot display — picks up manually claimed PumpFun rewards automatically
+    const potUsd    = solPrice ? parseFloat((balSol * solPrice).toFixed(2)) : null;
 
-    // 4. Get wallet balance and SOL price — always, every tick
-    const balSol   = await getBalanceSol();
-    const sendable = Math.max(0, balSol - GAS_RESERVE);
-    const solPrice = await fetchSolPriceUsd();
-    const potUsd   = solPrice ? parseFloat((balSol * solPrice).toFixed(2)) : null;
-
-    console.log(`[LBW] Wallet: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` | ~$${potUsd}` : ' | SOL price unavailable'}`);
-
-    // 5. Compute live shares for display
-    const sharesLive = computeShares(top10wallets, sendable);
-
-    // 6. Write everything to stats/global in ONE call — timer, pot, shares
-    const lastBuyTs = new Date(lastBuyTimeMs);
+    // Single merged write — frontend snapshot always sees consistent state
     await db.doc('stats/global').set({
-      lastBuyTime:   Timestamp.fromDate(lastBuyTs),
-      lastBuyer:     allBuys[0]?.wallet ?? null,
       currentPotSol: parseFloat(balSol.toFixed(4)),
       currentPotUsd: potUsd,
-      top10:         sharesLive,
     }, { merge: true });
 
-    // 7. Check timer
+    console.log(`[LBW] Wallet: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` | Pot ≈ $${potUsd}` : ''}`);
+
+    // 3. Check timer
+    if (!lastBuyTimeMs) return;
+
     const elapsed = (Date.now() - lastBuyTimeMs) / 1000;
     console.log(`[LBW] Elapsed: ${elapsed.toFixed(1)}s / ${TIMER_SECONDS}s`);
 
@@ -338,98 +267,75 @@ async function tick() {
       return;
     }
 
-    // 8. Timer expired — run payout
-    console.log(`[LBW] ⏰ Timer expired! Running payout...`);
+    // 4. Timer expired — pay out
+    console.log(`[LBW] ⏰ Timer expired! Checking for payout...`);
 
     if (sendable < MIN_DISTRIBUTE) {
-      console.log(`[LBW] Balance too low (${sendable.toFixed(4)} SOL < ${MIN_DISTRIBUTE}) — resetting timer`);
+      console.log(`[LBW] Balance too low (${sendable.toFixed(4)} SOL) — skipping`);
+      return;
+    }
+
+    // Get last buyer from Firestore
+    const snap = await db.collection('buyers').orderBy('time', 'desc').limit(1).get();
+    if (snap.empty) {
+      console.log(`[LBW] No buyers in Firestore — resetting timer`);
       lastBuyTimeMs = Date.now();
       await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
       return;
     }
 
-    if (top10wallets.length === 0) {
-      console.log(`[LBW] No eligible buyers — resetting timer`);
+    const lastBuyer = snap.docs[0].data().wallet;
+    if (lastBuyer === CREATOR_ADDR || lastBuyer === wallet.publicKey.toString()) {
+      console.log(`[LBW] Last buyer is creator — resetting timer`);
       lastBuyTimeMs = Date.now();
       await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
       return;
     }
 
-    // Filter out creator wallet
-    const filtered = top10wallets.filter(w => w !== CREATOR_ADDR && w !== wallet.publicKey.toString());
-    if (filtered.length === 0) {
-      console.log(`[LBW] All top wallets are creator — resetting timer`);
-      lastBuyTimeMs = Date.now();
-      await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
+    // Send SOL
+    const lamports = Math.floor(sendable * LAMPORTS_PER_SOL);
+    console.log(`[LBW] 🏆 Sending ${sendable.toFixed(4)} SOL to ${lastBuyer}`);
+
+    let txSig;
+    try {
+      txSig = await sendSol(lastBuyer, lamports);
+      console.log(`[LBW] ✅ TX confirmed: ${txSig}`);
+    } catch (e) {
+      console.error(`[LBW] ❌ Send failed:`, e.message);
       return;
     }
 
-    // Compute and log payouts
-    const payouts = computePayouts(filtered, sendable);
-    console.log(`[LBW] 🏆 Distributing ${sendable.toFixed(4)} SOL to ${payouts.length} wallet(s):`);
-    payouts.forEach((p,i) => console.log(`  [${i===0?'LEADER':'POOL  '}] ${p.wallet} → ${p.sol.toFixed(6)} SOL (${(p.pct*100).toFixed(1)}%)`));
-
-    // Send sequentially — one failure doesn't block the rest
-    const results = [];
-    for (const p of payouts) {
-      const lamports = Math.floor(p.sol * LAMPORTS_PER_SOL);
-      if (lamports < 5000) { console.log(`  [SKIP] ${p.wallet} — dust`); continue; }
-      try {
-        const sig = await sendSol(p.wallet, lamports);
-        console.log(`  [✅] ${p.wallet} → ${p.sol.toFixed(6)} SOL | TX: ${sig}`);
-        results.push({ ...p, txSignature: sig, success: true });
-        await sleep(400);
-      } catch (e) {
-        console.error(`  [❌] ${p.wallet} failed:`, e.message);
-        results.push({ ...p, success: false });
-      }
-    }
-
-    const totalSent    = results.filter(r => r.success).reduce((s,r) => s + r.sol, 0);
-    const totalSentUsd = solPrice ? parseFloat((totalSent * solPrice).toFixed(2)) : null;
-
-    // Record winners + reset stats
-    const batch3 = db.batch();
-    for (const r of results.filter(x => x.success)) {
-      const wUsd = solPrice ? parseFloat((r.sol * solPrice).toFixed(2)) : null;
-      batch3.set(db.collection('winners').doc(), {
-        wallet: r.wallet, amountSol: r.sol, amountUsd: wUsd,
-        pct: r.pct, role: r.role,
-        txSignature: r.txSignature, timestamp: Timestamp.now(),
-      });
-    }
-    batch3.set(db.doc('stats/global'), {
-      totalPaidSol:  FieldValue.increment(totalSent),
-      totalPaidUsd:  FieldValue.increment(totalSentUsd ?? 0),
-      totalWinners:  FieldValue.increment(results.filter(r => r.success).length),
-      lastWinner:    filtered[0],
+    // Record winner
+    const winUsd = solPrice ? parseFloat((sendable * solPrice).toFixed(2)) : null;
+    const batch2 = db.batch();
+    batch2.set(db.collection('winners').doc(), {
+      wallet: lastBuyer, amountSol: sendable, amountUsd: winUsd,
+      txSignature: txSig, timestamp: Timestamp.now(),
+    });
+    batch2.set(db.doc('stats/global'), {
+      totalPaidSol:  FieldValue.increment(sendable),
+      totalPaidUsd:  FieldValue.increment(winUsd ?? 0),
+      totalWinners:  FieldValue.increment(1),
+      lastWinner:    lastBuyer,
       currentPotSol: 0,
       currentPotUsd: 0,
       lastBuyTime:   Timestamp.now(),
-      top10:         [],
     }, { merge: true });
-    await batch3.commit();
+    await batch2.commit();
 
-    // Clear buyers collection for fresh round
-    const clearSnap  = await db.collection('buyers').get();
-    const clearBatch = db.batch();
-    clearSnap.docs.forEach(d => clearBatch.delete(d.ref));
-    await clearBatch.commit();
-
-    // Reset in-memory state
     lastBuyTimeMs = Date.now();
-    lastSeenTxSig = null;
-    console.log(`[LBW] 🎉 Round complete. Sent ${totalSent.toFixed(4)} SOL to ${results.filter(r=>r.success).length} winner(s)`);
+    console.log(`[LBW] 🎉 Winner: ${lastBuyer} won ${sendable.toFixed(4)} SOL${winUsd ? ` ($${winUsd})` : ''}`);
 
   } catch (err) {
     console.error('[LBW] Tick error:', err.message ?? err);
   }
 }
+
 // ─── SAFETY NETS ─────────────────────────────────────────────────────────────
 process.on('unhandledRejection', r => console.error('[LBW] unhandledRejection:', r));
 process.on('uncaughtException',  e => console.error('[LBW] uncaughtException:', e));
 
 // ─── START ────────────────────────────────────────────────────────────────────
 tick();
-cron.schedule('*/15 * * * * *', tick);
-console.log('[LBW] Scheduler started — ticking every 15 seconds');
+cron.schedule('*/3 * * * * *', tick);
+console.log('[LBW] Scheduler started — ticking every 3 seconds');
