@@ -234,7 +234,7 @@ async function tick() {
     if (lastBuyTimeMs === null) {
       try {
         const globalSnap = await db.doc('stats/global').get();
-        if (globalSnap.exists()) {
+        if (globalSnap.exists) {
           const d = globalSnap.data();
           if (d.lastBuyTime) {
             lastBuyTimeMs = d.lastBuyTime.toMillis();
