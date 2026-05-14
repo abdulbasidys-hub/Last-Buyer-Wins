@@ -413,8 +413,8 @@ export default function App() {
               onError={e => e.target.style.display = 'none'}
             />
             <h1 className="hero-title">
-              The Last Buyer<br />
-              <span className="hero-title-accent">Takes Everything.</span>
+              Last Buyer<br />
+              <span className="hero-title-accent">Takes Everything</span>
             </h1>
           </motion.div>
 
