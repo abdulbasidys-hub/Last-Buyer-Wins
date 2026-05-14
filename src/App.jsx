@@ -15,8 +15,8 @@ const firebaseConfig = {
   authDomain:        "last-buyer-wins.firebaseapp.com",
   projectId:         "last-buyer-wins",
   storageBucket:     "last-buyer-wins.firebasestorage.app",
-  messagingSenderId: "344177187343",
-  appId:             "1:344177187343:web:99797ade8c5ac700016e92",
+  messagingSenderId: "344177187543",
+  appId:             "1:344177187543:web:99797ade8c5ac700016e92",
   measurementId:     "G-XCZPQC1P5R",
 };
 const fbApp = initializeApp(firebaseConfig);
