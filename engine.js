@@ -251,9 +251,180 @@ async function tick() {
   console.log(`[LBW] ── tick ${new Date().toISOString()} ──`);
 
   try {
-    // 1. Fetch buys
+    // 1. Fetch buys from SolanaTracker
     const buys = await fetchRecentBuys();
     console.log(`[LBW] ${buys.length} buy(s) found after filter`);
+
+    if (buys.length > 0) {
+      // Write any new buys to Firestore buyers collection
+      const cutoff  = lastSeenTxSig ? buys.findIndex(b => b.txSignature === lastSeenTxSig) : -1;
+      const newBuys = cutoff === -1 ? buys.slice(0, 5) : buys.slice(0, cutoff);
+
+      if (newBuys.length > 0) {
+        console.log(`[LBW] Writing ${newBuys.length} new buy(s) to Firestore`);
+        const batch = db.batch();
+        for (const b of newBuys) {
+          batch.set(db.collection('buyers').doc(b.txSignature), {
+            wallet:      b.wallet,
+            txSignature: b.txSignature,
+            time:        Timestamp.fromDate(b.time),
+            volumeUsd:   b.volumeUsd ?? null,
+          }, { merge: true });
+        }
+        await batch.commit();
+      }
+
+      // Always update in-memory state from freshest API data
+      lastSeenTxSig = buys[0].txSignature;
+      lastBuyTimeMs = buys[0].time.getTime();
+      console.log(`[LBW] Last buyer: ${buys[0].wallet} at ${buys[0].time.toISOString()}`);
+
+    } else {
+      console.log(`[LBW] No new buys this tick`);
+    }
+
+    // 2. On boot — if lastBuyTimeMs is still null, seed it from Firestore
+    //    so the timer works immediately after a Railway redeploy
+    if (!lastBuyTimeMs) {
+      const globalDoc = await db.doc('stats/global').get();
+      if (globalDoc.exists) {
+        const d = globalDoc.data();
+        if (d.lastBuyTime) {
+          lastBuyTimeMs = d.lastBuyTime.toMillis();
+          console.log(`[LBW] Seeded lastBuyTimeMs from Firestore: ${new Date(lastBuyTimeMs).toISOString()}`);
+        }
+      }
+      // If still null (first ever run), seed with now so timer starts
+      if (!lastBuyTimeMs) {
+        lastBuyTimeMs = Date.now();
+        console.log(`[LBW] First run — seeding timer with now`);
+      }
+    }
+
+    // 3. Read all buyers from Firestore to build top10
+    //    (always read from Firestore, not from memory — survives redeploys)
+    const allBuysSnap = await db.collection('buyers').orderBy('time', 'desc').limit(100).get();
+    const allBuys     = allBuysSnap.docs.map(d => d.data());
+    const top10wallets = buildTop10(allBuys);
+    console.log(`[LBW] Top ${top10wallets.length} unique wallet(s) this round`);
+
+    // 4. Get wallet balance and SOL price — always, every tick
+    const balSol   = await getBalanceSol();
+    const sendable = Math.max(0, balSol - GAS_RESERVE);
+    const solPrice = await fetchSolPriceUsd();
+    const potUsd   = solPrice ? parseFloat((balSol * solPrice).toFixed(2)) : null;
+
+    console.log(`[LBW] Wallet: ${balSol.toFixed(4)} SOL | Sendable: ${sendable.toFixed(4)} SOL${potUsd ? ` | ~$${potUsd}` : ' | SOL price unavailable'}`);
+
+    // 5. Compute live shares for display
+    const sharesLive = computeShares(top10wallets, sendable);
+
+    // 6. Write everything to stats/global in ONE call — timer, pot, shares
+    const lastBuyTs = new Date(lastBuyTimeMs);
+    await db.doc('stats/global').set({
+      lastBuyTime:   Timestamp.fromDate(lastBuyTs),
+      lastBuyer:     allBuys[0]?.wallet ?? null,
+      currentPotSol: parseFloat(balSol.toFixed(4)),
+      currentPotUsd: potUsd,
+      top10:         sharesLive,
+    }, { merge: true });
+
+    // 7. Check timer
+    const elapsed = (Date.now() - lastBuyTimeMs) / 1000;
+    console.log(`[LBW] Elapsed: ${elapsed.toFixed(1)}s / ${TIMER_SECONDS}s`);
+
+    if (elapsed < TIMER_SECONDS) {
+      console.log(`[LBW] Timer running — ${(TIMER_SECONDS - elapsed).toFixed(0)}s left`);
+      return;
+    }
+
+    // 8. Timer expired — run payout
+    console.log(`[LBW] ⏰ Timer expired! Running payout...`);
+
+    if (sendable < MIN_DISTRIBUTE) {
+      console.log(`[LBW] Balance too low (${sendable.toFixed(4)} SOL < ${MIN_DISTRIBUTE}) — resetting timer`);
+      lastBuyTimeMs = Date.now();
+      await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
+      return;
+    }
+
+    if (top10wallets.length === 0) {
+      console.log(`[LBW] No eligible buyers — resetting timer`);
+      lastBuyTimeMs = Date.now();
+      await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
+      return;
+    }
+
+    // Filter out creator wallet
+    const filtered = top10wallets.filter(w => w !== CREATOR_ADDR && w !== wallet.publicKey.toString());
+    if (filtered.length === 0) {
+      console.log(`[LBW] All top wallets are creator — resetting timer`);
+      lastBuyTimeMs = Date.now();
+      await db.doc('stats/global').set({ lastBuyTime: Timestamp.now() }, { merge: true });
+      return;
+    }
+
+    // Compute and log payouts
+    const payouts = computePayouts(filtered, sendable);
+    console.log(`[LBW] 🏆 Distributing ${sendable.toFixed(4)} SOL to ${payouts.length} wallet(s):`);
+    payouts.forEach((p,i) => console.log(`  [${i===0?'LEADER':'POOL  '}] ${p.wallet} → ${p.sol.toFixed(6)} SOL (${(p.pct*100).toFixed(1)}%)`));
+
+    // Send sequentially — one failure doesn't block the rest
+    const results = [];
+    for (const p of payouts) {
+      const lamports = Math.floor(p.sol * LAMPORTS_PER_SOL);
+      if (lamports < 5000) { console.log(`  [SKIP] ${p.wallet} — dust`); continue; }
+      try {
+        const sig = await sendSol(p.wallet, lamports);
+        console.log(`  [✅] ${p.wallet} → ${p.sol.toFixed(6)} SOL | TX: ${sig}`);
+        results.push({ ...p, txSignature: sig, success: true });
+        await sleep(400);
+      } catch (e) {
+        console.error(`  [❌] ${p.wallet} failed:`, e.message);
+        results.push({ ...p, success: false });
+      }
+    }
+
+    const totalSent    = results.filter(r => r.success).reduce((s,r) => s + r.sol, 0);
+    const totalSentUsd = solPrice ? parseFloat((totalSent * solPrice).toFixed(2)) : null;
+
+    // Record winners + reset stats
+    const batch3 = db.batch();
+    for (const r of results.filter(x => x.success)) {
+      const wUsd = solPrice ? parseFloat((r.sol * solPrice).toFixed(2)) : null;
+      batch3.set(db.collection('winners').doc(), {
+        wallet: r.wallet, amountSol: r.sol, amountUsd: wUsd,
+        pct: r.pct, role: r.role,
+        txSignature: r.txSignature, timestamp: Timestamp.now(),
+      });
+    }
+    batch3.set(db.doc('stats/global'), {
+      totalPaidSol:  FieldValue.increment(totalSent),
+      totalPaidUsd:  FieldValue.increment(totalSentUsd ?? 0),
+      totalWinners:  FieldValue.increment(results.filter(r => r.success).length),
+      lastWinner:    filtered[0],
+      currentPotSol: 0,
+      currentPotUsd: 0,
+      lastBuyTime:   Timestamp.now(),
+      top10:         [],
+    }, { merge: true });
+    await batch3.commit();
+
+    // Clear buyers collection for fresh round
+    const clearSnap  = await db.collection('buyers').get();
+    const clearBatch = db.batch();
+    clearSnap.docs.forEach(d => clearBatch.delete(d.ref));
+    await clearBatch.commit();
+
+    // Reset in-memory state
+    lastBuyTimeMs = Date.now();
+    lastSeenTxSig = null;
+    console.log(`[LBW] 🎉 Round complete. Sent ${totalSent.toFixed(4)} SOL to ${results.filter(r=>r.success).length} winner(s)`);
+
+  } catch (err) {
+    console.error('[LBW] Tick error:', err.message ?? err);
+  }
+}
 
     if (buys.length > 0) {
       // Detect new ones (not yet written to Firestore)
